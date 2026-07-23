@@ -1,0 +1,1377 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>台灣 HRMS 人事出勤、三級請假簽核、角色權限隔離與多層級組織樹系統</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    body {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background-color: #0f172a;
+      color: #f8fafc;
+    }
+    .glass-card {
+      background: rgba(30, 41, 59, 0.7);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+    }
+    .org-tree-wrapper {
+      transform-origin: top center;
+      transition: transform 0.2s ease-in-out;
+    }
+    .org-tree ul {
+      padding-top: 16px; 
+      position: relative;
+      transition: all 0.3s;
+      display: flex;
+      justify-content: center;
+    }
+    .org-tree li {
+      float: left; text-align: center;
+      list-style-type: none;
+      position: relative;
+      padding: 16px 4px 0 4px;
+      transition: all 0.3s;
+    }
+    .org-tree li::before, .org-tree li::after{
+      content: '';
+      position: absolute; top: 0; right: 50%;
+      border-top: 2px solid #475569;
+      width: 50%; height: 16px;
+    }
+    .org-tree li::after{
+      right: auto; left: 50%;
+      border-left: 2px solid #475569;
+    }
+    .org-tree li:only-child::after, .org-tree li:only-child::before {
+      display: none;
+    }
+    .org-tree li:only-child{ padding-top: 0;}
+    .org-tree li:first-child::before, .org-tree li:last-child::after{
+      border: 0 none;
+    }
+    .org-tree li:last-child::before{
+      border-right: 2px solid #475569;
+      border-radius: 0 5px 0 0;
+    }
+    .org-tree li:first-child::after{
+      border-radius: 5px 0 0 0;
+    }
+    .org-tree ul ul::before{
+      content: '';
+      position: absolute; top: 0; left: 50%;
+      border-left: 2px solid #475569;
+      width: 0; height: 16px;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+  <!-- 頂部導覽列 -->
+  <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 py-3 flex justify-between items-center">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center font-bold text-white shadow-lg">
+          HR
+        </div>
+        <div>
+          <h1 class="font-bold text-lg leading-none text-slate-100">Taiwan HRMS</h1>
+          <span class="text-xs text-blue-400 font-medium">Colima Local Edition (零薪資洩漏快取防護)</span>
+        </div>
+      </div>
+
+      <!-- 右側切換與通知中心 -->
+      <div class="flex items-center gap-4">
+        <!-- 🔔 簽核通知中心按鈕 -->
+        <div class="relative">
+          <button onclick="toggleNotificationMenu()" class="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 relative">
+            <i class="fa-solid fa-bell text-amber-400"></i>
+            <span id="notifBadge" class="hidden absolute -top-1 -right-1 w-4 h-4 bg-rose-500 text-white rounded-full text-[10px] font-bold flex items-center justify-center animate-pulse">0</span>
+          </button>
+
+          <!-- 通知下拉選單 -->
+          <div id="notifDropdown" class="hidden absolute right-0 mt-2 w-80 glass-card rounded-2xl p-4 shadow-2xl z-50 border border-slate-700 max-h-96 overflow-y-auto">
+            <div class="flex justify-between items-center border-b border-slate-700 pb-2 mb-2">
+              <span class="font-bold text-xs text-slate-200">📬 簽核即時通知</span>
+              <span class="text-[10px] text-slate-400">點擊查看詳情</span>
+            </div>
+            <div id="notifList" class="space-y-2 text-xs">
+              <div class="text-slate-500 text-center py-2">無新通知</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2 bg-slate-800 px-3 py-1.5 rounded-lg border border-slate-700">
+          <i class="fa-solid fa-user-circle text-slate-400"></i>
+          <span class="text-xs text-slate-400">當前身分：</span>
+          <select id="userSelector" class="bg-transparent text-sm text-slate-200 font-semibold focus:outline-none cursor-pointer">
+            <option value="">載入中...</option>
+          </select>
+        </div>
+
+        <!-- 按鈕會依據角色動態隱藏/顯示 -->
+        <div class="flex gap-2">
+          <button onclick="switchTab('attendance')" id="btn-attendance" class="px-4 py-2 rounded-lg text-sm font-semibold transition bg-blue-600 text-white">
+            <i class="fa-solid fa-clock-rotate-left mr-1.5"></i> 打卡考勤
+          </button>
+          <button onclick="switchTab('leave')" id="btn-leave" class="px-4 py-2 rounded-lg text-sm font-semibold transition text-slate-400 hover:text-slate-200">
+            <i class="fa-solid fa-calendar-check mr-1.5"></i> 請假簽核
+          </button>
+          <button onclick="switchTab('payroll')" id="btn-payroll" class="px-4 py-2 rounded-lg text-sm font-semibold transition text-slate-400 hover:text-slate-200 hidden">
+            <i class="fa-solid fa-calculator mr-1.5"></i> 薪資與獎金 (HR專屬)
+          </button>
+          <button onclick="switchTab('departments')" id="btn-departments" class="px-4 py-2 rounded-lg text-sm font-semibold transition text-slate-400 hover:text-slate-200">
+            <i class="fa-solid fa-sitemap mr-1.5"></i> 多層級組織樹
+          </button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- 主內容區 -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 py-6 space-y-6">
+
+    <!-- 🌟 當頁獨立內嵌編輯區塊 (僅限 HR / Admin 檢視與編輯) -->
+    <div id="inlineEditContainer" class="glass-card rounded-2xl p-6 border-2 border-indigo-500/50 hidden shadow-2xl transition-all">
+      <div class="flex justify-between items-center border-b border-slate-700 pb-3 mb-4">
+        <div>
+          <span class="text-xs font-semibold text-indigo-400 uppercase tracking-wider">In-Page Employee Master Editor</span>
+          <h3 class="text-lg font-bold text-slate-100 flex items-center gap-2 mt-0.5">
+            <i class="fa-solid fa-user-pen text-indigo-400"></i>
+            <span>正在編輯員工：<span id="inline_display_name" class="text-blue-400 font-extrabold">--</span></span>
+          </h3>
+        </div>
+        <button type="button" onclick="closeInlineEditor()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg border border-slate-700">
+          <i class="fa-solid fa-xmark mr-1"></i> 關閉面板
+        </button>
+      </div>
+
+      <form id="inlineEmployeeForm" onsubmit="saveInlineEmployeeEdit(event)" class="space-y-4 text-xs">
+        <input type="hidden" id="edit_emp_id">
+
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <div>
+            <label class="block font-semibold text-slate-400 mb-1">員工姓名</label>
+            <input type="text" id="edit_name" required class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:border-indigo-500">
+          </div>
+          <div>
+            <label class="block font-semibold text-slate-400 mb-1">員工編號</label>
+            <input type="text" id="edit_employee_no" required class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200">
+          </div>
+          <div>
+            <label class="block font-semibold text-indigo-400 mb-1">所屬部門</label>
+            <select id="edit_department_id" class="w-full bg-slate-800 border border-indigo-500/50 rounded-lg px-3 py-2 text-slate-200 font-semibold">
+            </select>
+          </div>
+          <div>
+            <label class="block font-semibold text-slate-400 mb-1">職稱</label>
+            <input type="text" id="edit_job_title" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200">
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <div>
+            <label class="block font-semibold text-blue-400 mb-1">📅 到職日期 (決定年資特休)</label>
+            <input type="date" id="edit_hire_date" required class="w-full bg-slate-800 border border-blue-500/50 rounded-lg px-3 py-2 text-slate-200 font-semibold">
+          </div>
+          <div>
+            <label class="block font-semibold text-slate-400 mb-1">角色權限</label>
+            <select id="edit_role" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200">
+              <option value="employee">Employee (一般員工)</option>
+              <option value="manager">Manager (主管)</option>
+              <option value="hr">HR (人資)</option>
+              <option value="admin">Admin (管理員)</option>
+            </select>
+          </div>
+          <div>
+            <label class="block font-semibold text-slate-400 mb-1">約定底薪 (Base Salary NT$)</label>
+            <input type="number" id="edit_base_salary" required class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200">
+          </div>
+          <div>
+            <label class="block font-semibold text-cyan-400 mb-1">🌟 勞退個人自提比例 (0% ~ 6%)</label>
+            <input type="number" id="edit_pension_rate" min="0" max="6" class="w-full bg-slate-800 border border-cyan-500/50 rounded-lg px-3 py-2 text-slate-200">
+          </div>
+        </div>
+
+        <div class="border-t border-slate-800 pt-3 font-semibold text-indigo-400">福利津貼與各式獎金設定</div>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div>
+            <label class="block font-semibold text-emerald-400 mb-1">🍱 伙食補助 ($3,000免稅)</label>
+            <input type="number" id="edit_meal_allowance" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200">
+          </div>
+          <div>
+            <label class="block font-semibold text-slate-400 mb-1">🚗 交通補助 (NT$)</label>
+            <input type="number" id="edit_transport_allowance" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200">
+          </div>
+          <div>
+            <label class="block font-semibold text-amber-400 mb-1">🎯 績效獎金 (NT$)</label>
+            <input type="number" id="edit_performance_bonus" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200">
+          </div>
+          <div>
+            <label class="block font-semibold text-purple-400 mb-1">🎁 三節/年終禮金 (NT$)</label>
+            <input type="number" id="edit_festival_bonus" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200">
+          </div>
+        </div>
+
+        <div class="pt-3 flex justify-end gap-3 border-t border-slate-800">
+          <button type="button" onclick="closeInlineEditor()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl font-semibold">取消編輯</button>
+          <button type="submit" class="px-6 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 text-white rounded-xl font-bold shadow-lg">💾 儲存員工變更</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Tab 1: 打卡考勤頁面 -->
+    <div id="tab-attendance" class="space-y-6">
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div class="lg:col-span-2 glass-card rounded-2xl p-6 flex flex-col justify-between relative overflow-hidden">
+          <div class="flex justify-between items-start">
+            <div>
+              <span class="text-xs font-semibold uppercase tracking-wider text-blue-400">即時打卡面板</span>
+              <h2 id="currentDate" class="text-xl font-bold text-slate-200 mt-1">2026 年 7 月 23 日</h2>
+            </div>
+            <span class="px-3 py-1 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold rounded-full flex items-center gap-1.5">
+              <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> 本地內網連線
+            </span>
+          </div>
+
+          <div class="my-8 text-center">
+            <div id="clockDisplay" class="text-5xl md:text-6xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-300 tracking-tight">
+              00:00:00
+            </div>
+            <p class="text-xs text-slate-400 mt-2">
+              <i class="fa-solid fa-location-dot text-rose-400 mr-1"></i> 打卡定位：<span id="locationText" class="text-slate-300">台北總部 (GPS: 25.0330, 121.5654)</span>
+            </p>
+          </div>
+
+          <div class="grid grid-cols-2 gap-4">
+            <button onclick="handleClock('in')" class="py-4 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 text-white font-bold rounded-xl shadow-lg transition active:scale-95 flex items-center justify-center gap-2">
+              <i class="fa-solid fa-right-to-bracket text-lg"></i>
+              <span>上班打卡</span>
+            </button>
+            <button onclick="handleClock('out')" class="py-4 bg-gradient-to-r from-slate-700 to-slate-800 hover:from-slate-600 text-slate-200 font-bold rounded-xl border border-slate-600 transition active:scale-95 flex items-center justify-center gap-2">
+              <i class="fa-solid fa-right-from-bracket text-lg"></i>
+              <span>下班打卡</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="glass-card rounded-2xl p-6 flex flex-col justify-between">
+          <h3 class="font-bold text-base text-slate-200 border-b border-slate-700/60 pb-3 flex justify-between items-center">
+            <span>個人考勤與年資特休</span>
+            <span id="displaySeniority" class="text-xs text-blue-400 font-semibold">年資計算中...</span>
+          </h3>
+          <div class="space-y-3 my-3">
+            <div class="flex justify-between items-center p-2.5 rounded-xl bg-slate-800/40 border border-slate-700/30">
+              <span class="text-xs text-slate-300">勞基法第38條特休總額</span>
+              <span id="statAnnualTotal" class="text-base font-bold text-slate-100">0 天/年</span>
+            </div>
+            <div class="flex justify-between items-center p-2.5 rounded-xl bg-slate-800/40 border border-slate-700/30">
+              <span class="text-xs text-slate-300">本年度已核准休假</span>
+              <span id="statAnnualUsed" class="text-base font-bold text-amber-400">0 天</span>
+            </div>
+            <div class="flex justify-between items-center p-2.5 rounded-xl bg-slate-800/40 border border-slate-700/30">
+              <span class="text-xs text-slate-300">剩餘可用特休額度</span>
+              <span id="statAnnualRemaining" class="text-base font-bold text-emerald-400">0 天</span>
+            </div>
+          </div>
+          <p class="text-xs text-slate-500 text-center">依《勞動基準法》第38條按服務年資自動試算</p>
+        </div>
+      </div>
+
+      <div class="glass-card rounded-2xl p-6">
+        <h3 class="font-bold text-base text-slate-200 mb-4 flex items-center justify-between">
+          <span class="flex items-center gap-2">
+            <i class="fa-solid fa-list-check text-blue-400"></i>
+            <span>打卡歷史紀錄</span>
+          </span>
+          <span id="attendanceScopeText" class="text-xs text-indigo-400 font-semibold">資料範圍：個人專屬視圖</span>
+        </h3>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left border-collapse">
+            <thead>
+              <tr class="border-b border-slate-700 text-xs font-semibold text-slate-400 uppercase">
+                <th class="py-3 px-4">員工編號</th>
+                <th class="py-3 px-4">姓名</th>
+                <th class="py-3 px-4">上班打卡</th>
+                <th class="py-3 px-4">下班打卡</th>
+                <th class="py-3 px-4">打卡地點 / 地理圍欄</th>
+              </tr>
+            </thead>
+            <tbody id="attendanceTable" class="divide-y divide-slate-800 text-sm text-slate-300">
+              <tr><td colspan="5" class="py-4 text-center text-slate-500">載入中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab 2: 請假與分層簽核頁面 (含權限隔離與天數規則設定) -->
+    <div id="tab-leave" class="space-y-6 hidden">
+
+      <!-- ⚙️ 簽核天數層級可自訂設定面板 (僅限 Admin / HR 檢視) -->
+      <div id="approvalRulesPanel" class="glass-card rounded-2xl p-5 border-l-4 border-l-indigo-500 space-y-3">
+        <div class="flex justify-between items-center">
+          <div class="flex items-center gap-2">
+            <i class="fa-solid fa-sliders text-indigo-400 text-lg"></i>
+            <div>
+              <span class="font-bold text-slate-100 text-sm">公司簽核層級天數規則設定 (Approval Level Rules)</span>
+              <div class="text-xs text-slate-400">系統依據請假天數自動對應簽核流程（支援 HR 可視化修改天數邊界）</div>
+            </div>
+          </div>
+          <button onclick="saveApprovalLevelRules()" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold shadow">
+            💾 儲存天數規則
+          </button>
+        </div>
+
+        <div id="approvalRulesGrid" class="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2 border-t border-slate-700/60 text-xs">
+          <div class="text-slate-500">載入簽核層級中...</div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div class="glass-card rounded-2xl p-6">
+          <h3 class="font-bold text-base text-slate-200 border-b border-slate-700/60 pb-3 mb-4 flex items-center gap-2">
+            <i class="fa-solid fa-file-pen text-indigo-400"></i>
+            <span>申請線上請假</span>
+          </h3>
+
+          <form id="leaveForm" onsubmit="submitLeave(event)" class="space-y-4">
+            <div>
+              <label class="block text-xs font-semibold text-slate-400 mb-1">請假類別 (符合勞基法)</label>
+              <select id="leaveType" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none">
+                <option value="annual">特休假 (全薪)</option>
+                <option value="sick">普通傷病假 (半薪)</option>
+                <option value="personal">事假 (不給薪)</option>
+                <option value="marital">婚假 (8天全薪)</option>
+                <option value="bereavement">喪假 (全薪)</option>
+                <option value="maternity">產假 / 陪產檢假</option>
+              </select>
+            </div>
+
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs font-semibold text-slate-400 mb-1">開始時間</label>
+                <input type="datetime-local" id="startTime" required class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200">
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-400 mb-1">結束時間</label>
+                <input type="datetime-local" id="endTime" required class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200">
+              </div>
+            </div>
+
+            <div>
+              <label class="block text-xs font-semibold text-slate-400 mb-1">請假時數 (8小時 = 1天)</label>
+              <input type="number" id="totalHours" value="8" min="1" max="160" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200">
+            </div>
+
+            <div>
+              <label class="block text-xs font-semibold text-slate-400 mb-1">請假事由</label>
+              <textarea id="leaveReason" rows="3" placeholder="請填寫詳細原因..." class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200"></textarea>
+            </div>
+
+            <button type="submit" class="w-full py-3 bg-gradient-to-r from-indigo-600 to-blue-600 text-white font-bold rounded-xl shadow-lg transition active:scale-95">
+              送出假單 (自動對應分層簽核)
+            </button>
+          </form>
+        </div>
+
+        <div class="lg:col-span-2 glass-card rounded-2xl p-6">
+          <h3 class="font-bold text-base text-slate-200 mb-4 flex items-center justify-between border-b border-slate-700/60 pb-3">
+            <span class="flex items-center gap-2">
+              <i class="fa-solid fa-stamp text-amber-400"></i>
+              <span>假單列表與簽核審查 (權限防越權控制)</span>
+            </span>
+            <span id="leaveScopeText" class="text-xs bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-2.5 py-0.5 rounded-full font-semibold">
+              個人紀錄專區
+            </span>
+          </h3>
+
+          <div class="overflow-x-auto">
+            <table class="w-full text-left border-collapse">
+              <thead>
+                <tr class="border-b border-slate-700 text-xs font-semibold text-slate-400 uppercase">
+                  <th class="py-3 px-3">申請人 (部門)</th>
+                  <th class="py-3 px-3">假別</th>
+                  <th class="py-3 px-3">天數 (時數)</th>
+                  <th class="py-3 px-3">當前簽核關卡</th>
+                  <th class="py-3 px-3">簽核狀態</th>
+                  <th class="py-3 px-3 text-right">簽核操作</th>
+                </tr>
+              </thead>
+              <tbody id="leaveTable" class="divide-y divide-slate-800 text-sm text-slate-300">
+                <tr><td colspan="6" class="py-4 text-center text-slate-500">載入中...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab 3: 台灣薪資與獎金補助發薪頁面 (僅限 HR / Admin 檢視) -->
+    <div id="tab-payroll" class="space-y-6 hidden">
+      <div class="glass-card rounded-2xl p-6 flex flex-col md:flex-row justify-between items-center gap-4">
+        <div>
+          <span class="text-xs font-semibold text-emerald-400 uppercase tracking-wider">Taiwan Payroll & Benefits Engine</span>
+          <h2 class="text-xl font-bold text-slate-100 mt-0.5">薪資試算、自訂補助/獎金、勞退 6% 與銀行轉帳檔</h2>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-3 w-full md:w-auto">
+          <input type="month" id="payrollMonth" value="2026-07" class="bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm font-semibold text-slate-200 focus:outline-none">
+          <button onclick="calculatePayroll()" class="px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-500 text-white font-bold rounded-xl shadow transition text-xs">
+            <i class="fa-solid fa-calculator mr-1"></i> 自動試算
+          </button>
+          <button onclick="downloadBankTransferCSV()" class="px-4 py-2 bg-gradient-to-r from-blue-600 to-cyan-500 text-white font-bold rounded-xl shadow transition text-xs">
+            <i class="fa-solid fa-file-csv mr-1"></i> 下載銀行轉帳檔 (CSV)
+          </button>
+          <button onclick="confirmPayroll()" class="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-xl shadow transition text-xs">
+            <i class="fa-solid fa-lock mr-1"></i> 確定結算存檔
+          </button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-5 gap-4">
+        <div class="glass-card rounded-2xl p-4 border-l-4 border-l-blue-500">
+          <span class="text-xs text-slate-400 font-medium">應發薪資總額</span>
+          <div id="statGross" class="text-xl font-black text-slate-100 mt-1">NT$ 0</div>
+          <span class="text-xs text-slate-500 mt-0.5 block">含底薪+津貼+補助+獎金</span>
+        </div>
+
+        <div class="glass-card rounded-2xl p-4 border-l-4 border-l-amber-500">
+          <span class="text-xs text-slate-400 font-medium">法定代扣總額 (員工)</span>
+          <div id="statDeductions" class="text-xl font-black text-amber-400 mt-1">NT$ 0</div>
+          <span class="text-xs text-slate-500 mt-0.5 block">勞保+健保+自提6%+所得稅</span>
+        </div>
+
+        <div class="glass-card rounded-2xl p-4 border-l-4 border-l-emerald-500">
+          <span class="text-xs text-slate-400 font-medium">實發薪資總額 (淨發)</span>
+          <div id="statNet" class="text-xl font-black text-emerald-400 mt-1">NT$ 0</div>
+          <span class="text-xs text-slate-500 mt-0.5 block">匯入員工銀行帳號</span>
+        </div>
+
+        <div class="glass-card rounded-2xl p-4 border-l-4 border-l-cyan-500">
+          <span class="text-xs text-slate-400 font-medium">🌟 勞退雇主強制提繳 6%</span>
+          <div id="statPensionEmployer" class="text-xl font-black text-cyan-300 mt-1">NT$ 0</div>
+          <span class="text-xs text-slate-500 mt-0.5 block">公司專戶撥繳 (不扣員工)</span>
+        </div>
+
+        <div class="glass-card rounded-2xl p-4 border-l-4 border-l-purple-500">
+          <span class="text-xs text-slate-400 font-medium">雇主負擔總人力成本</span>
+          <div id="statEmployerCost" class="text-xl font-black text-purple-300 mt-1">NT$ 0</div>
+          <span class="text-xs text-slate-500 mt-0.5 block">含勞保70%+健保60%+勞退6%</span>
+        </div>
+      </div>
+
+      <div class="glass-card rounded-2xl p-6">
+        <h3 class="font-bold text-base text-slate-200 mb-4 flex items-center justify-between">
+          <span class="flex items-center gap-2">
+            <i class="fa-solid fa-table-list text-emerald-400"></i>
+            <span>薪資與自訂補助獎金 (伙食/交通/績效/三節) 試算明細總表</span>
+          </span>
+          <span class="text-xs text-slate-400 font-normal">🍱 伙食補助 $3,000 內免列所得稅</span>
+        </h3>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-left border-collapse">
+            <thead>
+              <tr class="border-b border-slate-700 text-xs font-semibold text-slate-400 uppercase">
+                <th class="py-3 px-3">員工</th>
+                <th class="py-3 px-3">到職日 / 年資</th>
+                <th class="py-3 px-3">底薪</th>
+                <th class="py-3 px-3 text-indigo-300">補助與獎金</th>
+                <th class="py-3 px-3">加班費</th>
+                <th class="py-3 px-4">應發總額</th>
+                <th class="py-3 px-3">勞保(自)</th>
+                <th class="py-3 px-3 font-bold text-emerald-400">實發金額</th>
+                <th class="py-3 px-3 text-right">編輯 / 薪資單</th>
+              </tr>
+            </thead>
+            <tbody id="payrollTable" class="divide-y divide-slate-800 text-sm text-slate-300">
+              <tr><td colspan="9" class="py-6 text-center text-slate-500">點擊「自動試算」產生明細</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab 4: 互動式多層級樹狀組織圖 -->
+    <div id="tab-departments" class="space-y-6 hidden">
+      <div class="glass-card rounded-2xl p-6 flex flex-col md:flex-row justify-between items-center gap-4">
+        <div>
+          <span class="text-xs font-semibold text-indigo-400 uppercase tracking-wider">Multi-Level Corporate Hierarchy</span>
+          <h2 class="text-xl font-bold text-slate-100 mt-0.5">多層級簽核組織樹 (CEO → 總經理室 → 營運部門)</h2>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2">
+          <!-- 🔍 畫布縮放控制 -->
+          <div class="flex items-center gap-1 bg-slate-800 p-1 rounded-xl border border-slate-700">
+            <button onclick="changeZoom(-0.1)" class="w-7 h-7 flex items-center justify-center bg-slate-700 hover:bg-slate-600 rounded-lg text-slate-200 text-xs" title="縮小">
+              <i class="fa-solid fa-magnifying-glass-minus"></i>
+            </button>
+            <span id="zoomDisplay" class="text-xs font-mono font-bold text-slate-300 px-2">100%</span>
+            <button onclick="changeZoom(0.1)" class="w-7 h-7 flex items-center justify-center bg-slate-700 hover:bg-slate-600 rounded-lg text-slate-200 text-xs" title="放大">
+              <i class="fa-solid fa-magnifying-glass-plus"></i>
+            </button>
+            <button onclick="resetZoom()" class="px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded-lg text-slate-300 text-xs" title="重設比率">100%</button>
+          </div>
+
+          <button onclick="toggleAllDepts(true)" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 rounded-xl text-xs font-semibold">
+            <i class="fa-solid fa-folder-open mr-1"></i> 展開
+          </button>
+          <button onclick="toggleAllDepts(false)" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 rounded-xl text-xs font-semibold">
+            <i class="fa-solid fa-folder-closed mr-1"></i> 收折
+          </button>
+
+          <!-- 新增部門按鈕 (僅限 Admin/HR 顯示) -->
+          <button id="btnCreateDept" onclick="promptCreateDept()" class="px-3.5 py-1.5 bg-gradient-to-r from-indigo-600 to-blue-500 text-white font-bold rounded-xl shadow transition text-xs flex items-center gap-1 hidden">
+            <i class="fa-solid fa-folder-plus"></i> 新增部門
+          </button>
+        </div>
+      </div>
+
+      <!-- 🌳 多層級視覺化樹狀組織圖容器 -->
+      <div class="glass-card rounded-2xl p-6 overflow-auto max-h-[750px] relative border border-slate-700">
+        <div id="treeWrapper" class="org-tree-wrapper min-w-[1200px] flex justify-center py-4">
+          <div id="orgChartTree" class="org-tree">
+            <div class="text-slate-500 py-12">載入多層級組織樹中...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- JavaScript 邏輯 -->
+  <script>
+    let currentEmployeeId = '';
+    let currentPayrollData = null;
+    let cachedEmployees = [];
+    let cachedDeptList = [];
+    let cachedApprovalLevels = [];
+    let currentZoom = 1.0;
+    const API_BASE = 'http://localhost:3001/api';
+
+    function updateClock() {
+      const now = new Date();
+      document.getElementById('clockDisplay').textContent = now.toLocaleTimeString('zh-TW', { hour12: false });
+      document.getElementById('currentDate').textContent = now.toLocaleDateString('zh-TW', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    window.addEventListener('DOMContentLoaded', () => {
+      initUserSelector();
+    });
+
+    function toggleNotificationMenu() {
+      const el = document.getElementById('notifDropdown');
+      if (el) el.classList.toggle('hidden');
+    }
+
+    async function loadNotifications() {
+      if (!currentEmployeeId) return;
+      try {
+        const res = await fetch(`${API_BASE}/notifications?recipient_id=${currentEmployeeId}`);
+        const notifs = await res.json();
+        const listEl = document.getElementById('notifList');
+        const badge = document.getElementById('notifBadge');
+        
+        const unreadCount = notifs.filter(n => !n.is_read).length;
+        if (unreadCount > 0) {
+          badge.textContent = unreadCount;
+          badge.classList.remove('hidden');
+        } else {
+          badge.classList.add('hidden');
+        }
+
+        listEl.innerHTML = '';
+        if (notifs.length === 0) {
+          listEl.innerHTML = '<div class="text-slate-500 text-center py-2">目前沒有通知</div>';
+          return;
+        }
+
+        notifs.forEach(n => {
+          const item = document.createElement('div');
+          item.className = `p-2.5 rounded-xl border ${n.is_read ? 'bg-slate-800/40 border-slate-700/40 text-slate-400' : 'bg-indigo-950/40 border-indigo-500/40 text-slate-200 font-semibold'} transition cursor-pointer`;
+          item.onclick = async () => {
+            await fetch(`${API_BASE}/notifications/${n.id}/read`, { method: 'PUT' });
+            if (n.link === '#leave') switchTab('leave');
+            loadNotifications();
+          };
+          item.innerHTML = `
+            <div class="font-bold text-xs flex justify-between">
+              <span>${n.title}</span>
+              <span class="text-[10px] text-slate-500 font-mono">${new Date(n.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+            </div>
+            <div class="text-[11px] mt-1 font-normal leading-snug">${n.message}</div>
+          `;
+          listEl.appendChild(item);
+        });
+      } catch (err) {}
+    }
+
+    async function loadApprovalLevelRules() {
+      try {
+        const res = await fetch(`${API_BASE}/approval-levels`);
+        const levels = await res.json();
+        cachedApprovalLevels = levels;
+
+        const container = document.getElementById('approvalRulesGrid');
+        container.innerHTML = '';
+
+        levels.forEach(lvl => {
+          const card = document.createElement('div');
+          card.className = 'p-3 rounded-xl bg-slate-900/80 border border-slate-700 space-y-2';
+          
+          let roleTitle = '部門主管一級核准';
+          if (lvl.required_role === 'adm_manager') roleTitle = '二級 (呈報總經理室 ADM)';
+          if (lvl.required_role === 'ceo') roleTitle = '三級 (呈報 CEO / 最高管理者)';
+
+          card.innerHTML = `
+            <div class="font-bold text-indigo-300 flex justify-between items-center">
+              <span>${roleTitle}</span>
+              <span class="text-[10px] text-slate-500 font-mono">Rule ID: ${lvl.id.slice(0, 6)}</span>
+            </div>
+            <div class="flex items-center gap-1.5 text-slate-300">
+              <span>天數區間:</span>
+              <input type="number" step="0.5" id="min_${lvl.id}" value="${lvl.min_days}" class="w-14 bg-slate-800 border border-slate-700 rounded px-1.5 py-0.5 text-center text-slate-200">
+              <span>天 ～</span>
+              <input type="number" step="0.5" id="max_${lvl.id}" value="${lvl.max_days || 999}" class="w-16 bg-slate-800 border border-slate-700 rounded px-1.5 py-0.5 text-center text-slate-200">
+              <span>天</span>
+            </div>
+            <input type="text" id="desc_${lvl.id}" value="${lvl.description || ''}" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-[11px] text-slate-400">
+          `;
+          container.appendChild(card);
+        });
+      } catch (err) {}
+    }
+
+    async function saveApprovalLevelRules() {
+      const updatedLevels = cachedApprovalLevels.map(lvl => ({
+        id: lvl.id,
+        min_days: parseFloat(document.getElementById(`min_${lvl.id}`).value),
+        max_days: parseFloat(document.getElementById(`max_${lvl.id}`).value),
+        description: document.getElementById(`desc_${lvl.id}`).value,
+      }));
+
+      try {
+        const res = await fetch(`${API_BASE}/approval-levels`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ levels: updatedLevels })
+        });
+        const data = await res.json();
+        alert(data.message);
+        loadApprovalLevelRules();
+      } catch (err) {
+        alert('更新天數簽核規則失敗！');
+      }
+    }
+
+    function changeZoom(delta) {
+      currentZoom = Math.min(1.5, Math.max(0.5, currentZoom + delta));
+      applyZoom();
+    }
+    function resetZoom() {
+      currentZoom = 1.0;
+      applyZoom();
+    }
+    function applyZoom() {
+      const wrapper = document.getElementById('treeWrapper');
+      const display = document.getElementById('zoomDisplay');
+      if (wrapper) wrapper.style.transform = `scale(${currentZoom})`;
+      if (display) display.textContent = `${Math.round(currentZoom * 100)}%`;
+    }
+
+    // 🛡️ 角色與存取控制視圖切換 (RBAC UI Enforcement)
+    function applyRolePermissions(user) {
+      if (!user) return;
+      const isHRorAdmin = user.role === 'admin' || user.role === 'hr';
+      const isManager = user.role === 'manager';
+
+      // 1. 薪資發薪頁籤：僅限 HR / Admin 顯示
+      const payrollBtn = document.getElementById('btn-payroll');
+      if (payrollBtn) payrollBtn.classList.toggle('hidden', !isHRorAdmin);
+
+      // 若非 HR/Admin，卻停留在薪資頁面，強制跳回「打卡考勤」頁面並清空快取！
+      if (!isHRorAdmin && !document.getElementById('tab-payroll').classList.contains('hidden')) {
+        switchTab('attendance');
+      }
+
+      // 2. 簽核層級規則設定面板：僅限 HR / Admin 顯示
+      const rulesPanel = document.getElementById('approvalRulesPanel');
+      if (rulesPanel) rulesPanel.classList.toggle('hidden', !isHRorAdmin);
+
+      // 3. 新增部門按鈕：僅限 HR / Admin
+      const btnCreateDept = document.getElementById('btnCreateDept');
+      if (btnCreateDept) btnCreateDept.classList.toggle('hidden', !isHRorAdmin);
+
+      // 4. 更新打卡與請假資料範圍提示字串
+      const attScope = document.getElementById('attendanceScopeText');
+      if (attScope) {
+        if (isHRorAdmin) attScope.textContent = '資料範圍：全公司 50 人紀錄 (HR/管理員視圖)';
+        else if (isManager) attScope.textContent = `資料範圍：${user.department_name || '同部門'} 成員考勤 (主管視圖)`;
+        else attScope.textContent = '資料範圍：個人專屬打卡紀錄';
+      }
+
+      const leaveScope = document.getElementById('leaveScopeText');
+      if (leaveScope) {
+        if (isHRorAdmin) leaveScope.textContent = '全公司假單總覽 (審查與備查權限)';
+        else if (isManager) leaveScope.textContent = `${user.department_name || '同部門'} 簽核專區 (主管審核權限)`;
+        else leaveScope.textContent = '個人請假歷史紀錄專區';
+      }
+    }
+
+    // 初始化使用者下拉選單
+    async function initUserSelector() {
+      try {
+        const res = await fetch(`${API_BASE}/employees`);
+        const employees = await res.json();
+        const select = document.getElementById('userSelector');
+        select.innerHTML = '';
+        
+        employees.forEach(emp => {
+          const option = document.createElement('option');
+          option.value = emp.id;
+          option.textContent = `${emp.employee_no} - ${emp.name} (${emp.job_title || emp.role.toUpperCase()})`;
+          select.appendChild(option);
+        });
+
+        if (employees.length > 0) {
+          currentEmployeeId = employees[0].id;
+          await onUserSwitched(currentEmployeeId);
+        }
+
+        select.addEventListener('change', async (e) => {
+          currentEmployeeId = e.target.value;
+          await onUserSwitched(currentEmployeeId);
+        });
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    // 🔥 關鍵安全切換：切換使用者時向後端重新發送請求，清空上一人的薪資快取！
+    async function onUserSwitched(empId) {
+      currentPayrollData = null; // 清空薪資試算數據
+      closeInlineEditor();       // 關閉內嵌編輯器
+
+      await loadEmployees();
+      await loadDepartments();
+      loadAttendance();
+      loadLeaveRequests();
+      loadNotifications();
+      loadApprovalLevelRules();
+    }
+
+    async function loadEmployees() {
+      try {
+        // 🔥 帶入 currentEmployeeId 作為 requester_id，由後端依據身分進行 AES-256 解密或傳回 *** 遮罩
+        const res = await fetch(`${API_BASE}/employees?requester_id=${currentEmployeeId}`);
+        const employees = await res.json();
+        cachedEmployees = employees;
+
+        const currentEmp = employees.find(e => e.id === currentEmployeeId);
+        if (currentEmp) {
+          updateUserSeniorityDisplay(currentEmp);
+          applyRolePermissions(currentEmp);
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    function updateUserSeniorityDisplay(emp) {
+      if (!emp) return;
+      document.getElementById('displaySeniority').textContent = `服務年資：${emp.seniorityText || '計算中'}`;
+      document.getElementById('statAnnualTotal').textContent = `${emp.annualLeaveTotal || 0} 天/年`;
+      document.getElementById('statAnnualUsed').textContent = `${emp.annualLeaveUsed || 0} 天`;
+      document.getElementById('statAnnualRemaining').textContent = `${emp.annualLeaveRemaining || 0} 天`;
+    }
+
+    function switchTab(tab) {
+      const currentEmp = cachedEmployees.find(e => e.id === currentEmployeeId);
+      const isHRorAdmin = currentEmp && (currentEmp.role === 'admin' || currentEmp.role === 'hr');
+
+      // 安全攔截：若非 HR/Admin 欲進入薪資頁面，則拒絕
+      if (tab === 'payroll' && !isHRorAdmin) {
+        alert('🔒 存取拒絕：您無存取全公司薪資與發薪試算模組之權限！');
+        return;
+      }
+
+      ['attendance', 'leave', 'payroll', 'departments'].forEach(t => {
+        const el = document.getElementById(`tab-${t}`);
+        if (el) el.classList.toggle('hidden', t !== tab);
+        
+        const btn = document.getElementById(`btn-${t}`);
+        if (btn) {
+          btn.className = t === tab 
+            ? 'px-4 py-2 rounded-lg text-sm font-semibold transition bg-blue-600 text-white'
+            : 'px-4 py-2 rounded-lg text-sm font-semibold transition text-slate-400 hover:text-slate-200';
+        }
+      });
+
+      if (tab === 'payroll' && !currentPayrollData) {
+        calculatePayroll();
+      }
+      if (tab === 'departments') {
+        loadDepartments();
+      }
+    }
+
+    // 🌳 載入並渲染多層級組織樹 (使用當前身份權限過濾後之資料)
+    async function loadDepartments() {
+      try {
+        const res = await fetch(`${API_BASE}/departments?requester_id=${currentEmployeeId}`);
+        const data = await res.json();
+        cachedDeptList = data.departments;
+        const container = document.getElementById('orgChartTree');
+
+        const currentEmp = cachedEmployees.find(e => e.id === currentEmployeeId);
+        const isHRorAdmin = currentEmp && (currentEmp.role === 'admin' || currentEmp.role === 'hr');
+
+        const ceo = cachedEmployees.find(e => e.role === 'admin') || { name: '系統管理員', job_title: 'CEO / 最高管理層', employee_no: 'EMP001' };
+        const totalEmpCount = cachedEmployees.length;
+
+        const admDept = data.departments.find(d => d.code === 'ADM') || data.departments[0];
+        const operationalDepts = data.departments.filter(d => d.id !== admDept.id);
+
+        const admManager = admDept.members.find(m => m.role === 'manager') || admDept.members[0] || { name: '陳家豪', job_title: '總經理', employee_no: 'EMP002' };
+        const admGeneralMembers = admDept.members.filter(m => m.id !== admManager.id);
+
+        let admMembersHtml = '';
+        admGeneralMembers.forEach(m => {
+          const hireStr = m.hire_date ? new Date(m.hire_date).toISOString().split('T')[0] : '未設定';
+          admMembersHtml += `
+            <div class="p-2 rounded-xl bg-slate-900/90 border border-slate-700/60 shadow text-left my-1">
+              <div class="flex justify-between items-center">
+                <div class="font-bold text-[11px] text-slate-100">${m.name} <span class="text-[9px] text-slate-400">(${m.employee_no})</span></div>
+                ${isHRorAdmin ? `
+                  <button type="button" onclick="startInlineEdit('${m.id}')" class="text-[10px] px-1.5 py-0.5 bg-slate-700 hover:bg-slate-600 text-indigo-300 rounded border border-slate-600 transition">
+                    <i class="fa-solid fa-pen"></i>
+                  </button>
+                ` : ''}
+              </div>
+              <div class="text-[9px] text-slate-400 mt-0.5">${m.job_title || '專員'} | ${hireStr}</div>
+              <div class="text-[9px] text-slate-500 mt-0.5">底薪: <span class="${isHRorAdmin ? 'text-amber-300 font-mono' : 'text-slate-500'}">${m.base_salary}</span></div>
+            </div>
+          `;
+        });
+
+        let subDeptsHtml = '';
+        operationalDepts.forEach(dept => {
+          const manager = dept.members.find(m => m.role === 'manager') || dept.members[0] || { name: '主管', job_title: '部門主管', employee_no: '-' };
+          const members = dept.members.filter(m => m.id !== manager.id);
+
+          let membersHtml = '';
+          members.forEach(m => {
+            const hireStr = m.hire_date ? new Date(m.hire_date).toISOString().split('T')[0] : '未設定';
+            membersHtml += `
+              <div class="p-2 rounded-xl bg-slate-900/90 border border-slate-700/60 shadow text-left my-1">
+                <div class="flex justify-between items-center">
+                  <div class="font-bold text-[11px] text-slate-100">${m.name} <span class="text-[9px] text-slate-400">(${m.employee_no})</span></div>
+                  ${isHRorAdmin ? `
+                    <button type="button" onclick="startInlineEdit('${m.id}')" class="text-[10px] px-1.5 py-0.5 bg-slate-700 hover:bg-slate-600 text-indigo-300 rounded border border-slate-600 transition">
+                      <i class="fa-solid fa-pen"></i>
+                    </button>
+                  ` : ''}
+                </div>
+                <div class="text-[9px] text-slate-400 mt-0.5">${m.job_title || '專員'} | ${hireStr}</div>
+                <div class="flex justify-between text-[9px] mt-1 pt-1 border-t border-slate-800">
+                  <span class="text-blue-300">${m.seniorityText}</span>
+                  <span class="text-emerald-400">特休: ${m.annualLeaveRemaining}天</span>
+                </div>
+                <div class="text-[9px] text-slate-500 mt-0.5">底薪: <span class="${isHRorAdmin ? 'text-amber-300 font-mono' : 'text-slate-500'}">${m.base_salary}</span></div>
+              </div>
+            `;
+          });
+
+          subDeptsHtml += `
+            <li>
+              <div class="w-52 glass-card p-3 rounded-2xl border-2 border-indigo-500/40 shadow-xl inline-block text-left relative">
+                <div class="flex justify-between items-center border-b border-slate-700/60 pb-1.5 mb-2">
+                  <div class="flex items-center gap-1.5">
+                    <i class="fa-solid fa-sitemap text-indigo-400 text-xs"></i>
+                    <span class="font-black text-slate-100 text-xs">${dept.name}</span>
+                  </div>
+                  <span class="text-[9px] font-mono px-1.5 py-0.5 bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 rounded-full font-bold">${dept.code}</span>
+                </div>
+
+                <div class="p-1.5 rounded-xl bg-indigo-950/40 border border-indigo-500/30 mb-2">
+                  <div class="text-[9px] font-semibold text-indigo-300 uppercase">二級簽核主管</div>
+                  <div class="flex justify-between items-center mt-0.5">
+                    <div class="font-bold text-[11px] text-slate-100">${manager.name} <span class="text-[9px] text-slate-400">(${manager.job_title || '主管'})</span></div>
+                    ${(isHRorAdmin && manager.id) ? `<button onclick="startInlineEdit('${manager.id}')" class="text-[10px] px-1.5 py-0.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded"><i class="fa-solid fa-pen"></i></button>` : ''}
+                  </div>
+                </div>
+
+                <button onclick="toggleDeptMembers('${dept.id}')" class="w-full py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 rounded-xl text-[11px] font-semibold flex items-center justify-center gap-1 transition">
+                  <i id="icon-dept-${dept.id}" class="fa-solid fa-chevron-down text-indigo-400"></i>
+                  <span>成員 (${dept.employee_count} 人)</span>
+                </button>
+
+                <div id="dept-members-${dept.id}" class="mt-2 space-y-1 transition-all">
+                  ${membersHtml || '<div class="text-[9px] text-slate-500 py-1 text-center">尚無組員</div>'}
+                </div>
+              </div>
+            </li>
+          `;
+        });
+
+        container.innerHTML = `
+          <ul>
+            <li>
+              <!-- 👑 Layer 1: CEO -->
+              <div class="w-64 glass-card p-4 rounded-2xl border-2 border-emerald-500/60 shadow-2xl inline-block text-center bg-gradient-to-b from-slate-900 to-slate-900/90 relative">
+                <div class="absolute top-3 right-3">
+                  ${(isHRorAdmin && ceo.id) ? `
+                    <button onclick="startInlineEdit('${ceo.id}')" class="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[10px] font-bold flex items-center gap-1 shadow">
+                      <i class="fa-solid fa-pen"></i> 編輯 CEO
+                    </button>
+                  ` : ''}
+                </div>
+
+                <div class="inline-flex items-center justify-center w-10 h-10 rounded-2xl bg-gradient-to-tr from-emerald-600 to-teal-400 text-white font-black text-base shadow-lg mb-1.5">
+                  CEO
+                </div>
+                <h2 class="text-sm font-extrabold text-slate-100">貴公司 總管理處</h2>
+                <div class="text-xs text-slate-300 font-semibold mt-0.5">${ceo.name} <span class="text-[10px] text-slate-400">(${ceo.job_title})</span></div>
+                
+                <div class="mt-2 pt-1.5 border-t border-slate-800 flex justify-around text-[10px]">
+                  <span class="text-slate-300">總人數：<strong class="text-emerald-400 font-bold">${totalEmpCount} 人</strong></span>
+                  <span class="text-slate-300">營運部門：<strong class="text-indigo-400 font-bold">${operationalDepts.length} 個</strong></span>
+                </div>
+              </div>
+
+              <!-- 🌟 Layer 2: 總經理室 -->
+              <ul>
+                <li>
+                  <div class="w-64 glass-card p-4 rounded-2xl border-2 border-amber-500/60 shadow-2xl inline-block text-center bg-gradient-to-b from-slate-900 to-amber-950/20 relative">
+                    <span class="text-[9px] font-bold uppercase tracking-wider bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded-full border border-amber-500/30">一級決策層 (二級簽核)</span>
+                    <h3 class="text-sm font-bold text-slate-100 mt-1 flex items-center justify-center gap-1.5">
+                      <i class="fa-solid fa-building-user text-amber-400"></i>
+                      <span>${admDept.name}</span>
+                    </h3>
+
+                    <div class="p-2 rounded-xl bg-amber-950/40 border border-amber-500/30 my-2 text-left">
+                      <div class="text-[9px] font-semibold text-amber-300">部門最高主管 (總經理)</div>
+                      <div class="flex justify-between items-center mt-0.5">
+                        <div class="font-bold text-xs text-slate-100">${admManager.name} <span class="text-[10px] text-slate-400">(${admManager.job_title})</span></div>
+                        ${(isHRorAdmin && admManager.id) ? `<button onclick="startInlineEdit('${admManager.id}')" class="text-[10px] px-1.5 py-0.5 bg-amber-600 hover:bg-amber-500 text-white rounded"><i class="fa-solid fa-pen"></i></button>` : ''}
+                      </div>
+                    </div>
+
+                    <button onclick="toggleDeptMembers('${admDept.id}')" class="w-full py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 rounded-xl text-[11px] font-semibold flex items-center justify-center gap-1 transition">
+                      <i id="icon-dept-${admDept.id}" class="fa-solid fa-chevron-down text-amber-400"></i>
+                      <span>幕僚組員 (${admDept.employee_count} 人)</span>
+                    </button>
+
+                    <div id="dept-members-${admDept.id}" class="mt-2 space-y-1 transition-all">
+                      ${admMembersHtml}
+                    </div>
+                  </div>
+
+                  <!-- 🏢 Layer 3: 營運執行部門 -->
+                  <ul>
+                    ${subDeptsHtml}
+                  </ul>
+                </li>
+              </ul>
+            </li>
+          </ul>
+        `;
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    function toggleDeptMembers(deptId) {
+      const el = document.getElementById(`dept-members-${deptId}`);
+      const icon = document.getElementById(`icon-dept-${deptId}`);
+      if (el) {
+        const isHidden = el.classList.contains('hidden');
+        el.classList.toggle('hidden', !isHidden);
+        if (icon) {
+          icon.className = isHidden ? 'fa-solid fa-chevron-down text-indigo-400' : 'fa-solid fa-chevron-right text-slate-400';
+        }
+      }
+    }
+
+    function toggleAllDepts(show) {
+      cachedDeptList.forEach(dept => {
+        const el = document.getElementById(`dept-members-${dept.id}`);
+        const icon = document.getElementById(`icon-dept-${dept.id}`);
+        if (el) el.classList.toggle('hidden', !show);
+        if (icon) icon.className = show ? 'fa-solid fa-chevron-down text-indigo-400' : 'fa-solid fa-chevron-right text-slate-400';
+      });
+    }
+
+    function populateDepartmentOptions(targetSelectId, selectedDeptId = '') {
+      const select = document.getElementById(targetSelectId);
+      select.innerHTML = '<option value="">(無所屬部門 / 待分配)</option>';
+      cachedDeptList.forEach(dept => {
+        const opt = document.createElement('option');
+        opt.value = dept.id;
+        opt.textContent = `${dept.name} (${dept.code})`;
+        if (dept.id === selectedDeptId) opt.selected = true;
+        select.appendChild(opt);
+      });
+    }
+
+    async function startInlineEdit(empId) {
+      const currentEmp = cachedEmployees.find(e => e.id === currentEmployeeId);
+      const isHRorAdmin = currentEmp && (currentEmp.role === 'admin' || currentEmp.role === 'hr');
+      if (!isHRorAdmin) return alert('🔒 存取拒絕：只有 HR 或系統管理員可以編輯員工資料！');
+
+      let emp = cachedEmployees.find(e => e.id === empId);
+      if (!emp) return alert('找不到員工資料！');
+
+      populateDepartmentOptions('edit_department_id', emp.department_id || '');
+
+      document.getElementById('inline_display_name').textContent = `${emp.name} (${emp.employee_no})`;
+      document.getElementById('edit_emp_id').value = emp.id;
+      document.getElementById('edit_name').value = emp.name || '';
+      document.getElementById('edit_employee_no').value = emp.employee_no || '';
+      document.getElementById('edit_job_title').value = emp.job_title || '';
+      document.getElementById('edit_role').value = emp.role || 'employee';
+      document.getElementById('edit_hire_date').value = emp.hire_date ? new Date(emp.hire_date).toISOString().split('T')[0] : '';
+      document.getElementById('edit_base_salary').value = emp.base_salary !== '***' ? emp.base_salary : 0;
+      document.getElementById('edit_pension_rate').value = emp.labor_pension_self_rate !== undefined ? emp.labor_pension_self_rate : 6;
+      document.getElementById('edit_meal_allowance').value = emp.meal_allowance !== '***' ? emp.meal_allowance : 3000;
+      document.getElementById('edit_transport_allowance').value = emp.transport_allowance !== '***' ? emp.transport_allowance : 0;
+      document.getElementById('edit_performance_bonus').value = emp.performance_bonus !== '***' ? emp.performance_bonus : 0;
+      document.getElementById('edit_festival_bonus').value = emp.festival_bonus !== '***' ? emp.festival_bonus : 0;
+
+      const container = document.getElementById('inlineEditContainer');
+      container.classList.remove('hidden');
+      container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function closeInlineEditor() {
+      document.getElementById('inlineEditContainer').classList.add('hidden');
+    }
+
+    async function saveInlineEmployeeEdit(e) {
+      e.preventDefault();
+      const id = document.getElementById('edit_emp_id').value;
+      const body = {
+        name: document.getElementById('edit_name').value,
+        employee_no: document.getElementById('edit_employee_no').value,
+        job_title: document.getElementById('edit_job_title').value,
+        role: document.getElementById('edit_role').value,
+        department_id: document.getElementById('edit_department_id').value || null,
+        hire_date: document.getElementById('edit_hire_date').value,
+        base_salary: document.getElementById('edit_base_salary').value,
+        labor_pension_self_rate: document.getElementById('edit_pension_rate').value,
+        meal_allowance: document.getElementById('edit_meal_allowance').value,
+        transport_allowance: document.getElementById('edit_transport_allowance').value,
+        performance_bonus: document.getElementById('edit_performance_bonus').value,
+        festival_bonus: document.getElementById('edit_festival_bonus').value,
+      };
+
+      try {
+        const res = await fetch(`${API_BASE}/employees/${id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        alert(data.message);
+        closeInlineEditor();
+        await onUserSwitched(currentEmployeeId);
+      } catch (err) {
+        alert('儲存變更失敗');
+      }
+    }
+
+    async function promptCreateDept() {
+      const name = prompt('請輸入新部門名稱 (如: 財務會計部):');
+      if (!name) return;
+      const code = prompt('請輸入部門代碼 (如: FIN):', 'FIN');
+      try {
+        const res = await fetch(`${API_BASE}/departments`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, code })
+        });
+        const data = await res.json();
+        alert(data.message);
+        loadDepartments();
+      } catch (err) {
+        alert('新增部門失敗');
+      }
+    }
+
+    async function handleClock(type) {
+      if (!currentEmployeeId) return alert('請先選擇員工！');
+      try {
+        const res = await fetch(`${API_BASE}/attendance/clock`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            employee_id: currentEmployeeId,
+            type: type,
+            location: '台北總部 (GPS: 25.0330, 121.5654)'
+          })
+        });
+        const data = await res.json();
+        alert(data.message);
+        loadAttendance();
+      } catch (err) {
+        alert('打卡失敗！');
+      }
+    }
+
+    async function loadAttendance() {
+      try {
+        const res = await fetch(`${API_BASE}/attendance?requester_id=${currentEmployeeId}`);
+        const logs = await res.json();
+        const tbody = document.getElementById('attendanceTable');
+        tbody.innerHTML = '';
+
+        if (logs.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-slate-500">尚無存取權限內之打卡紀錄</td></tr>';
+          return;
+        }
+
+        logs.forEach(log => {
+          const tr = document.createElement('tr');
+          const clockInTime = log.clock_in ? new Date(log.clock_in).toLocaleString('zh-TW') : '-';
+          const clockOutTime = log.clock_out ? new Date(log.clock_out).toLocaleString('zh-TW') : '-';
+
+          tr.innerHTML = `
+            <td class="py-3 px-4 font-mono text-xs text-blue-400">${log.employee_no}</td>
+            <td class="py-3 px-4 font-medium text-slate-200">${log.employee_name}</td>
+            <td class="py-3 px-4 font-mono text-xs text-emerald-400">${clockInTime}</td>
+            <td class="py-3 px-4 font-mono text-xs text-amber-400">${clockOutTime}</td>
+            <td class="py-3 px-4 text-xs text-slate-400">${log.clock_in_location || '內網打卡'}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    async function submitLeave(e) {
+      e.preventDefault();
+      if (!currentEmployeeId) return alert('請選擇員工！');
+
+      const leave_type = document.getElementById('leaveType').value;
+      const start_time = document.getElementById('startTime').value;
+      const end_time = document.getElementById('endTime').value;
+      const total_hours = document.getElementById('totalHours').value;
+      const reason = document.getElementById('leaveReason').value;
+
+      try {
+        const res = await fetch(`${API_BASE}/leave`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            employee_id: currentEmployeeId,
+            leave_type,
+            start_time,
+            end_time,
+            total_hours,
+            reason
+          })
+        });
+        const data = await res.json();
+        alert(`${data.message}\n天數：${data.leaveDays} 天`);
+        document.getElementById('leaveForm').reset();
+        loadLeaveRequests();
+        loadEmployees();
+        loadNotifications();
+      } catch (err) {
+        alert('請假送出失敗！');
+      }
+    }
+
+    async function loadLeaveRequests() {
+      try {
+        const res = await fetch(`${API_BASE}/leave?requester_id=${currentEmployeeId}`);
+        const leaves = await res.json();
+        const tbody = document.getElementById('leaveTable');
+        tbody.innerHTML = '';
+
+        const currentEmp = cachedEmployees.find(e => e.id === currentEmployeeId);
+        const isHRorAdmin = currentEmp && (currentEmp.role === 'admin' || currentEmp.role === 'hr');
+
+        let pending = 0;
+        leaves.forEach(l => {
+          const leaveDays = parseFloat((parseFloat(l.total_hours) / 8).toFixed(1));
+          if (l.status.startsWith('pending')) pending++;
+
+          const tr = document.createElement('tr');
+
+          let stageBadge = '<span class="px-2 py-0.5 rounded text-xs bg-blue-500/20 text-blue-300 border border-blue-500/30">一級 (部門主管)</span>';
+          if (l.status === 'pending_adm' || l.current_stage === 'adm') {
+            stageBadge = '<span class="px-2 py-0.5 rounded text-xs bg-amber-500/20 text-amber-300 border border-amber-500/30 animate-pulse">二級 (呈報總經理室)</span>';
+          } else if (l.status === 'pending_ceo' || l.current_stage === 'ceo') {
+            stageBadge = '<span class="px-2 py-0.5 rounded text-xs bg-rose-500/20 text-rose-300 border border-rose-500/30 animate-pulse">三級 (呈報 CEO 終審)</span>';
+          }
+
+          let statusBadge = '<span class="px-2 py-0.5 rounded text-xs bg-amber-500/20 text-amber-400">待審核</span>';
+          if (l.status === 'approved') statusBadge = '<span class="px-2 py-0.5 rounded text-xs bg-emerald-500/20 text-emerald-400 font-bold">已全數核准結案</span>';
+          if (l.status === 'rejected') statusBadge = '<span class="px-2 py-0.5 rounded text-xs bg-rose-500/20 text-rose-400 font-bold">已駁回</span>';
+
+          const leaveTypeName = {
+            annual: '特休假',
+            sick: '病假 (半薪)',
+            personal: '事假',
+            marital: '婚假',
+            bereavement: '喪假',
+            maternity: '產假'
+          }[l.leave_type] || l.leave_type;
+
+          let btnText = '核准';
+          if (l.current_stage === 'adm') btnText = '二級核准 (總經理)';
+          if (l.current_stage === 'ceo') btnText = '三級終審 (CEO)';
+
+          let canApprove = false;
+          if (isHRorAdmin) {
+            canApprove = true;
+          } else if (currentEmp && currentEmp.role === 'manager') {
+            if (l.current_stage === 'manager' && currentEmp.department_id === l.department_id) canApprove = true;
+            if (l.current_stage === 'adm' && currentEmp.department_code === 'ADM') canApprove = true;
+          }
+
+          tr.innerHTML = `
+            <td class="py-3 px-3">
+              <div class="font-medium text-slate-200">${l.employee_name}</div>
+              <div class="text-[10px] text-indigo-400">${l.department_name || '總管理處'}</div>
+            </td>
+            <td class="py-3 px-3 font-semibold text-blue-400">${leaveTypeName}</td>
+            <td class="py-3 px-3 text-xs font-mono">
+              <span class="font-bold text-amber-300 text-sm">${leaveDays} 天</span> (${l.total_hours}hr)
+            </td>
+            <td class="py-3 px-3">${stageBadge}</td>
+            <td class="py-3 px-3">${statusBadge}</td>
+            <td class="py-3 px-3 text-right">
+              ${l.status.startsWith('pending') ? (canApprove ? `
+                <button onclick="reviewLeave('${l.id}', 'approved')" class="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-semibold mr-1 shadow transition">
+                  ${btnText}
+                </button>
+                <button onclick="reviewLeave('${l.id}', 'rejected')" class="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded text-xs font-semibold shadow transition">駁回</button>
+              ` : `<span class="text-xs text-slate-500 font-mono">等待該主管簽核</span>`) : `<span class="text-xs text-slate-500">已結案</span>`}
+            </td>
+          `;
+          tbody.appendChild(tr);
+        });
+
+        document.getElementById('pendingCount').textContent = `${pending} 筆待審`;
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    async function reviewLeave(id, status) {
+      const currentEmp = cachedEmployees.find(e => e.id === currentEmployeeId);
+      const comment = status === 'approved' ? `同意請假 (簽核人: ${currentEmp ? currentEmp.name : '主管'})` : '人力調配不足駁回';
+      try {
+        const res = await fetch(`${API_BASE}/leave/${id}/review`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            reviewer_id: currentEmployeeId,
+            status,
+            comment
+          })
+        });
+        const data = await res.json();
+        alert(data.message);
+        loadLeaveRequests();
+        loadEmployees();
+        loadNotifications();
+      } catch (err) {
+        alert(err.message || '簽核操作失敗！');
+      }
+    }
+
+    async function calculatePayroll() {
+      const month = document.getElementById('payrollMonth').value;
+      try {
+        const res = await fetch(`${API_BASE}/payroll/calculate?month=${month}&requester_id=${currentEmployeeId}`);
+        const data = await res.json();
+        if (data.error) return alert(data.error);
+
+        currentPayrollData = data;
+
+        document.getElementById('statGross').textContent = `NT$ ${data.summary.total_gross.toLocaleString()}`;
+        document.getElementById('statDeductions').textContent = `NT$ ${data.summary.total_employee_deductions.toLocaleString()}`;
+        document.getElementById('statNet').textContent = `NT$ ${data.summary.total_net.toLocaleString()}`;
+        document.getElementById('statPensionEmployer').textContent = `NT$ ${data.summary.total_pension_employer.toLocaleString()}`;
+        document.getElementById('statEmployerCost').textContent = `NT$ ${data.summary.total_employer_cost.toLocaleString()}`;
+
+        const tbody = document.getElementById('payrollTable');
+        tbody.innerHTML = '';
+
+        data.details.forEach(item => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td class="py-3 px-3">
+              <div class="font-bold text-slate-200">${item.employee_name}</div>
+              <div class="text-xs text-slate-400 font-mono">${item.employee_no}</div>
+            </td>
+            <td class="py-3 px-3 text-xs">
+              <div class="text-slate-200 font-medium">${item.hire_date}</div>
+              <div class="text-blue-400 font-semibold">${item.seniorityText} (特休 ${item.annualLeaveTotal}天)</div>
+            </td>
+            <td class="py-3 px-3 font-mono text-slate-300">NT$ ${item.base_salary.toLocaleString()}</td>
+            <td class="py-3 px-3 font-mono text-xs text-indigo-300">
+              +NT$ ${item.total_allowances_and_bonuses.toLocaleString()}
+              <div class="text-[10px] text-slate-500">🍱$${item.meal_allowance} 🚗$${item.transport_allowance} 🎯$${item.performance_bonus}</div>
+            </td>
+            <td class="py-3 px-3 font-mono text-amber-400">+NT$ ${item.overtime_pay.toLocaleString()}</td>
+            <td class="py-3 px-3 font-mono font-bold text-slate-100">NT$ ${item.gross_salary.toLocaleString()}</td>
+            <td class="py-3 px-3 font-mono text-xs text-slate-400">NT$ ${item.labor_insurance_employee.toLocaleString()}</td>
+            <td class="py-3 px-3 font-mono font-black text-emerald-400 text-base">NT$ ${item.net_salary.toLocaleString()}</td>
+            <td class="py-3 px-3 text-right space-x-1">
+              <button type="button" onclick="startInlineEdit('${item.employee_id}')" class="px-2.5 py-1 bg-indigo-600/30 hover:bg-indigo-600 border border-indigo-500/50 text-indigo-300 hover:text-white rounded text-xs transition">
+                <i class="fa-solid fa-pen mr-1"></i> 編輯
+              </button>
+              <a href="${API_BASE}/export/pay-slip?employee_id=${item.employee_id}&month=${month}" target="_blank" class="px-2 py-1 bg-indigo-600/30 hover:bg-indigo-600 border border-indigo-500/50 text-indigo-300 hover:text-white rounded text-xs font-semibold inline-flex items-center gap-1">
+                <i class="fa-solid fa-print"></i> 薪資單
+              </a>
+            </td>
+          `;
+          tbody.appendChild(tr);
+        });
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    function downloadBankTransferCSV() {
+      const month = document.getElementById('payrollMonth').value;
+      window.open(`${API_BASE}/export/bank-transfer?month=${month}`, '_blank');
+    }
+
+    async function confirmPayroll() {
+      if (!currentPayrollData) return alert('請先點擊一鍵自動試算！');
+      const month = document.getElementById('payrollMonth').value;
+      if (!confirm(`確定要封存存檔【${month}】薪資資料嗎？`)) return;
+
+      try {
+        const res = await fetch(`${API_BASE}/payroll/confirm`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            month: month,
+            details: currentPayrollData.details
+          })
+        });
+        const data = await res.json();
+        alert(data.message);
+      } catch (err) {
+        alert('存檔失敗！');
+      }
+    }
+  </script>
+</body>
+</html>
