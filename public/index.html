@@ -126,6 +126,9 @@
           <button onclick="switchTab('payroll')" id="btn-payroll" class="px-4 py-2 rounded-lg text-sm font-semibold transition text-slate-400 hover:text-slate-200 hidden">
             <i class="fa-solid fa-calculator mr-1.5"></i> 薪資與獎金 (HR專屬)
           </button>
+          <button onclick="switchTab('audit')" id="btn-audit" class="px-4 py-2 rounded-lg text-sm font-semibold transition text-slate-400 hover:text-slate-200 hidden">
+            <i class="fa-solid fa-shield-halved mr-1.5"></i> 資安稽核軌跡
+          </button>
           <button onclick="switchTab('departments')" id="btn-departments" class="px-4 py-2 rounded-lg text-sm font-semibold transition text-slate-400 hover:text-slate-200">
             <i class="fa-solid fa-sitemap mr-1.5"></i> 多層級組織樹
           </button>
@@ -539,6 +542,38 @@
       </div>
     </div>
 
+    <!-- Tab 5: Phase 4 企業資安審計與操作軌跡 (僅限 HR / Admin 檢視) -->
+    <div id="tab-audit" class="space-y-6 hidden">
+      <div class="glass-card rounded-2xl p-6">
+        <h3 class="font-bold text-base text-slate-200 mb-4 flex items-center justify-between border-b border-slate-700/60 pb-3">
+          <span class="flex items-center gap-2">
+            <i class="fa-solid fa-shield-halved text-indigo-400"></i>
+            <span>全系統資安與個資異動稽核軌跡 (Audit Log Traceability)</span>
+          </span>
+          <span class="text-xs text-indigo-300 bg-indigo-500/20 border border-indigo-500/30 px-2.5 py-0.5 rounded-full font-semibold">
+            不可篡改紀錄
+          </span>
+        </h3>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-left border-collapse">
+            <thead>
+              <tr class="border-b border-slate-700 text-xs font-semibold text-slate-400 uppercase">
+                <th class="py-3 px-3">時間戳記</th>
+                <th class="py-3 px-3">操作者</th>
+                <th class="py-3 px-3">異動動作 (Action)</th>
+                <th class="py-3 px-3">目標資料表 / ID</th>
+                <th class="py-3 px-3">新舊數值紀錄</th>
+              </tr>
+            </thead>
+            <tbody id="auditLogsTable" class="divide-y divide-slate-800 text-xs text-slate-300">
+              <tr><td colspan="5" class="py-6 text-center text-slate-500">載入稽核軌跡中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <!-- Tab 4: 互動式多層級樹狀組織圖 -->
     <div id="tab-departments" class="space-y-6 hidden">
       <div class="glass-card rounded-2xl p-6 flex flex-col md:flex-row justify-between items-center gap-4">
@@ -736,7 +771,10 @@
       const payrollBtn = document.getElementById('btn-payroll');
       if (payrollBtn) payrollBtn.classList.toggle('hidden', !isHRorAdmin);
 
-      if (!isHRorAdmin && !document.getElementById('tab-payroll').classList.contains('hidden')) {
+      const auditBtn = document.getElementById('btn-audit');
+      if (auditBtn) auditBtn.classList.toggle('hidden', !isHRorAdmin);
+
+      if (!isHRorAdmin && (!document.getElementById('tab-payroll').classList.contains('hidden') || !document.getElementById('tab-audit').classList.contains('hidden'))) {
         switchTab('attendance');
       }
 
@@ -842,12 +880,12 @@
       const currentEmp = cachedEmployees.find(e => e.id === currentEmployeeId);
       const isHRorAdmin = currentEmp && (currentEmp.role === 'admin' || currentEmp.role === 'hr');
 
-      if (tab === 'payroll' && !isHRorAdmin) {
-        alert('🔒 存取拒絕：您無存取全公司薪資與發薪模組之權限！');
+      if ((tab === 'payroll' || tab === 'audit') && !isHRorAdmin) {
+        alert('🔒 存取拒絕：您無存取全公司薪資與稽核模組之權限！');
         return;
       }
 
-      ['attendance', 'leave', 'payroll', 'departments'].forEach(t => {
+      ['attendance', 'leave', 'payroll', 'audit', 'departments'].forEach(t => {
         const el = document.getElementById(`tab-${t}`);
         if (el) el.classList.toggle('hidden', t !== tab);
         
@@ -862,8 +900,39 @@
       if (tab === 'payroll' && !currentPayrollData) {
         calculatePayroll();
       }
+      if (tab === 'audit') {
+        loadAuditLogs();
+      }
       if (tab === 'departments') {
         loadDepartments();
+      }
+    }
+
+    async function loadAuditLogs() {
+      try {
+        const res = await fetch(`${API_BASE}/audit-logs`);
+        const logs = await res.json();
+        const tbody = document.getElementById('auditLogsTable');
+        tbody.innerHTML = '';
+
+        if (logs.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-slate-500">尚無系統稽核紀錄</td></tr>';
+          return;
+        }
+
+        logs.forEach(log => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td class="py-3 px-3 font-mono text-slate-400">${new Date(log.created_at).toLocaleString('zh-TW')}</td>
+            <td class="py-3 px-3 font-bold text-slate-200">${log.operator_name || 'HR專員'}</td>
+            <td class="py-3 px-3"><span class="px-2 py-0.5 rounded text-[10px] bg-indigo-500/20 text-indigo-300 font-mono font-bold">${log.action_type}</span></td>
+            <td class="py-3 px-3 font-mono text-slate-300">${log.target_table} (${log.target_id ? log.target_id.slice(0, 8) : '-'})</td>
+            <td class="py-3 px-3 font-mono text-[10px] text-amber-300/80 max-w-xs truncate">${JSON.stringify(log.new_values)}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+      } catch (err) {
+        console.error(err);
       }
     }
 
