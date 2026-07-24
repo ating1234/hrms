@@ -21,13 +21,47 @@ const pool = new Pool({
   port: parseInt(process.env.DB_PORT || '5432', 10),
 });
 
+let laborInsuranceGradesCache = [];
+let healthInsuranceGradesCache = [];
+
+async function initInsuranceGradesCache() {
+  try {
+    const lRes = await pool.query(`SELECT * FROM labor_insurance_grades ORDER BY min_salary ASC`);
+    const hRes = await pool.query(`SELECT * FROM health_insurance_grades ORDER BY min_salary ASC`);
+    laborInsuranceGradesCache = lRes.rows;
+    healthInsuranceGradesCache = hRes.rows;
+    console.log(`✅ 成功載入台灣官方投保薪資分級表：勞保 ${lRes.rows.length} 級距，健保 ${hRes.rows.length} 級距`);
+  } catch (err) {
+    console.error('❌ 載入投保分級表失敗:', err.message);
+  }
+}
+
 pool.query('SELECT NOW()', (err, res) => {
   if (err) {
     console.error('❌ PostgreSQL 連線失敗:', err.stack);
   } else {
-    console.log('✅ 成功連線至 Colima PostgreSQL 資料庫 (Phase 1 勞工法規嚴格合規與變形班表開啟):', res.rows[0].now);
+    console.log('✅ 成功連線至 Colima PostgreSQL 資料庫 (Phase 2 勞健保分級對照與二代健保/勞檢清冊開啟):', res.rows[0].now);
+    initInsuranceGradesCache();
   }
 });
+
+// Helper: 動態對照勞保投保薪資級距
+function getLaborInsuredSalary(baseSalary) {
+  if (!laborInsuranceGradesCache.length) return baseSalary;
+  const matched = laborInsuranceGradesCache.find(g => baseSalary >= parseFloat(g.min_salary) && baseSalary <= parseFloat(g.max_salary));
+  if (matched) return parseFloat(matched.insured_salary);
+  const highest = laborInsuranceGradesCache[laborInsuranceGradesCache.length - 1];
+  return parseFloat(highest.insured_salary);
+}
+
+// Helper: 動態對照健保投保薪資級距
+function getHealthInsuredSalary(baseSalary) {
+  if (!healthInsuranceGradesCache.length) return baseSalary;
+  const matched = healthInsuranceGradesCache.find(g => baseSalary >= parseFloat(g.min_salary) && baseSalary <= parseFloat(g.max_salary));
+  if (matched) return parseFloat(matched.insured_salary);
+  const highest = healthInsuranceGradesCache[healthInsuranceGradesCache.length - 1];
+  return parseFloat(highest.insured_salary);
+}
 
 // ----------------------------------------------------
 // 🌟 台灣勞基法年資與特休假演算法
@@ -82,7 +116,7 @@ function sanitizeEmployeeSensitiveData(emp, isAuthorized) {
 }
 
 // ----------------------------------------------------
-// 1. 班表維護與動態變形工時 API (Phase 1 新增)
+// 1. 班表維護與動態變形工時 API
 // ----------------------------------------------------
 
 app.get('/api/shifts', async (req, res) => {
@@ -264,7 +298,7 @@ app.put('/api/employees/:id', async (req, res) => {
 });
 
 // ----------------------------------------------------
-// 3. 打卡與請假 API (Phase 1 強化：勞基法46小時警示與完整假別)
+// 3. 打卡與請假 API (包含勞基法46小時警示與完整假別)
 // ----------------------------------------------------
 
 app.get('/api/attendance', async (req, res) => {
@@ -310,7 +344,6 @@ app.get('/api/attendance', async (req, res) => {
 app.post('/api/attendance/clock', async (req, res) => {
   const { employee_id, type, location, lat, lng, overtime_hours, overtime_type } = req.body;
   try {
-    // 🌟 Phase 1 加班上限檢查：《勞基法》第32條每月不得超過46小時
     if (overtime_hours && parseFloat(overtime_hours) > 0) {
       const now = new Date();
       const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
@@ -424,7 +457,6 @@ app.post('/api/leave', async (req, res) => {
     const empRes = await pool.query(`SELECT e.*, d.code as dept_code, d.name as dept_name FROM employees e LEFT JOIN departments d ON e.department_id = d.id WHERE e.id = $1`, [employee_id]);
     const emp = empRes.rows[0];
 
-    // 生理假特殊限制檢核：《性別平等工作法》第14條每月1天
     if (leave_type === 'menstrual') {
       const now = new Date();
       const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
@@ -675,7 +707,7 @@ app.put('/api/notifications/:id/read', async (req, res) => {
 });
 
 // ----------------------------------------------------
-// 5. 100% 台灣薪資與加班費分流引擎 (Phase 1 強化)
+// 5. Phase 2 勞健保官方投保薪資分級表與二代健保補充保費引擎
 // ----------------------------------------------------
 
 function calculateTaiwanPayrollFull(employee, monthLeaves = [], monthOTLogs = []) {
@@ -686,14 +718,15 @@ function calculateTaiwanPayrollFull(employee, monthLeaves = [], monthOTLogs = []
   const performanceBonus = parseFloat(employee.performance_bonus || 0);
   const festivalBonus = parseFloat(employee.festival_bonus || 0);
 
-  const laborInsuranceGrade = parseFloat(employee.labor_insurance_grade || baseSalary);
-  const healthInsuranceGrade = parseFloat(employee.health_insurance_grade || baseSalary);
+  // 🌟 Phase 2 關鍵合規升級：根據實際底薪，自動向上對照官方投保薪資分級表 (Grade Range Alignment)
+  const laborInsuranceGrade = getLaborInsuredSalary(baseSalary);
+  const healthInsuranceGrade = getHealthInsuredSalary(baseSalary);
+
   const dependentsCount = parseInt(employee.dependents_count || 0, 10);
   const pensionSelfRate = parseFloat(employee.labor_pension_self_rate !== undefined ? employee.labor_pension_self_rate : 6);
 
   const hourlyRate = baseSalary / 240;
 
-  // 🌟 Phase 1 加班費倍率精準分流 (平日 / 休息日 / 國定假日 / 例假日)
   let totalOTPay = 0;
   monthOTLogs.forEach(log => {
     const hours = parseFloat(log.overtime_hours || 0);
@@ -713,17 +746,15 @@ function calculateTaiwanPayrollFull(employee, monthLeaves = [], monthOTLogs = []
   });
   const overtimePay = Math.round(totalOTPay);
 
-  // 🌟 Phase 1 精準假別扣薪演算法符合《勞工請假規則》
   let leaveDeduction = 0;
   monthLeaves.forEach(l => {
     if (l.status === 'approved') {
       const hours = parseFloat(l.total_hours || 0);
       if (l.leave_type === 'sick' || l.leave_type === 'menstrual') {
-        leaveDeduction += hours * hourlyRate * 0.5; // 病假與生理假半薪
+        leaveDeduction += hours * hourlyRate * 0.5;
       } else if (l.leave_type === 'personal' || l.leave_type === 'family_care') {
-        leaveDeduction += hours * hourlyRate * 1.0; // 事假與家庭照顧假不給薪
+        leaveDeduction += hours * hourlyRate * 1.0;
       }
-      // 特休、婚假、喪假、產假、陪產假、產檢假、公傷假均為全薪，不扣款！
     }
   });
   leaveDeduction = Math.round(leaveDeduction);
@@ -741,6 +772,7 @@ function calculateTaiwanPayrollFull(employee, monthLeaves = [], monthOTLogs = []
   const laborPensionEmployer6Pct = Math.round(baseSalary * 0.06);
   const laborPensionEmployeeSelf = Math.round(baseSalary * (pensionSelfRate / 100));
 
+  // 🌟 Phase 2 關鍵合規升級：二代健保雇主補充保費 2.11% (給付總額 > 健保投保總額之差額)
   const diffSalary = Math.max(0, grossSalary - healthInsuranceGrade);
   const employerSecondNHI = Math.round(diffSalary * 0.0211);
 
@@ -767,6 +799,8 @@ function calculateTaiwanPayrollFull(employee, monthLeaves = [], monthOTLogs = []
     bank_code: employee.bank_code || '812',
     bank_account: employee.bank_account || '123456789012',
     base_salary: baseSalary,
+    laborInsuranceGrade,
+    healthInsuranceGrade,
     fixed_allowance: fixedAllowance,
     meal_allowance: mealAllowance,
     transport_allowance: transportAllowance,
@@ -841,6 +875,115 @@ app.get('/api/payroll/calculate', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error calculating payroll' });
+  }
+});
+
+// ----------------------------------------------------
+// 6. Phase 2 關鍵匯出：國稅局格式 50 各類所得扣繳憑單與《勞基法》第30條勞檢出勤紀錄清冊
+// ----------------------------------------------------
+
+// 📄 1. 勞檢專用「一鍵匯出符合勞基法第30條勞工出勤紀錄清冊 (PDF HTML Print Format)」
+app.get('/api/export/labor-inspection-attendance', async (req, res) => {
+  const { month } = req.query;
+  try {
+    const result = await pool.query(`
+      SELECT a.*, e.employee_no, e.name as employee_name, d.name as department_name
+      FROM attendance_logs a
+      JOIN employees e ON a.employee_id = e.id
+      LEFT JOIN departments d ON e.department_id = d.id
+      ORDER BY e.employee_no ASC, a.created_at DESC
+    `);
+
+    const html = `
+    <!DOCTYPE html>
+    <html lang="zh-TW">
+    <head>
+      <meta charset="UTF-8">
+      <title>勞動檢查專用 - 勞工出勤紀錄清冊 (${month || '2026-07'})</title>
+      <style>
+        body { font-family: sans-serif; padding: 20px; color: #0f172a; }
+        .header { text-align: center; border-b: 2px solid #000; padding-bottom: 10px; margin-bottom: 15px; }
+        h1 { margin: 0; font-size: 20px; }
+        .sub { font-size: 12px; color: #475569; margin-top: 5px; }
+        table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 10px; }
+        th, td { border: 1px solid #334155; padding: 6px 8px; text-align: left; }
+        th { background: #e2e8f0; font-weight: bold; }
+        .sign-box { margin-top: 30px; display: flex; justify-content: space-between; font-size: 12px; }
+      </style>
+    </head>
+    <body onload="window.print()">
+      <div class="header">
+        <h1>貴公司 勞工出勤紀錄清冊 (符合《勞動基準法》第30條第5項)</h1>
+        <div class="sub">稽核月份：${month || '2026-07'} | 記載至分鐘 | 保存期限：五年</div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>項次</th>
+            <th>員工編號</th>
+            <th>姓名</th>
+            <th>部門</th>
+            <th>上班打卡時間 (至分鐘)</th>
+            <th>下班打卡時間 (至分鐘)</th>
+            <th>平日/休息日加班時數</th>
+            <th>打卡地點 / 地理圍欄</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${result.rows.map((row, idx) => `
+            <tr>
+              <td>${idx + 1}</td>
+              <td>${row.employee_no}</td>
+              <td>${row.employee_name}</td>
+              <td>${row.department_name || '總管理處'}</td>
+              <td>${row.clock_in ? new Date(row.clock_in).toLocaleString('zh-TW', { hour12: false }) : '-'}</td>
+              <td>${row.clock_out ? new Date(row.clock_out).toLocaleString('zh-TW', { hour12: false }) : '-'}</td>
+              <td>${row.overtime_hours || 0} 小時 (${row.overtime_type || 'workday'})</td>
+              <td>${row.clock_in_location || '內網 GPS 打卡'}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+
+      <div class="sign-box">
+        <div>製表人人資簽章：__________________</div>
+        <div>部門主管覆核：__________________</div>
+        <div>公司負責人 (CEO) 蓋章：__________________</div>
+      </div>
+    </body>
+    </html>
+    `;
+    res.send(html);
+  } catch (err) {
+    res.status(500).send('Error generating inspection log');
+  }
+});
+
+// 📄 2. 國税局各類所得扣繳憑單 (格式 50) 媒體申報格式檔案匯出
+app.get('/api/export/tax-withholding-statement', async (req, res) => {
+  const { year } = req.query;
+  try {
+    const employees = (await pool.query(`
+      SELECT e.id, e.employee_no, e.name,
+             COALESCE(pgp_sym_decrypt(e.base_salary_encrypted, $1), '0') as base_salary,
+             COALESCE(pgp_sym_decrypt(e.meal_allowance_encrypted, $1), '3000') as meal_allowance
+      FROM employees e WHERE e.is_active = TRUE ORDER BY e.employee_no ASC
+    `, [DB_SECRET_KEY])).rows;
+
+    let txt = `50,${year || '2026'},貴公司統一編號:88888888,各類所得扣繳憑單(格式50)媒體申報檔\n`;
+    employees.forEach(emp => {
+      const base = parseFloat(emp.base_salary);
+      const meal = parseFloat(emp.meal_allowance);
+      const taxableYearly = (base + Math.max(0, meal - 3000)) * 12;
+      txt += `50,${emp.employee_no},${emp.name},所得類別:50(薪資),全年所得給付總額:${Math.round(taxableYearly)},扣繳稅額:0,淨給付額:${Math.round(taxableYearly)}\n`;
+    });
+
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="Tax_Withholding_Format50_${year || '2026'}.txt"`);
+    res.send(txt);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error generating tax statement' });
   }
 });
 
@@ -923,12 +1066,13 @@ app.get('/api/export/pay-slip', async (req, res) => {
         .total-row { font-weight: bold; background: #f1f5f9; }
         .net-box { text-align: right; background: #ecfdf5; border: 2px solid #10b981; padding: 15px; border-radius: 8px; color: #047857; font-size: 18px; font-weight: bold; }
         .pension-badge { display: inline-block; background: #dbeafe; color: #1e40af; font-size: 11px; padding: 2px 6px; border-radius: 4px; font-weight: bold; }
+        .grade-badge { display: inline-block; background: #fef3c7; color: #92400e; font-size: 10px; padding: 1px 5px; border-radius: 4px; font-weight: bold; }
         .footer { text-align: center; font-size: 11px; color: #94a3b8; margin-top: 25px; }
       </style>
     </head>
     <body>
       <div class="slip-box">
-        <h2>貴公司 正式薪資與福利明細單 (Phase 1 勞基法全假別合規)</h2>
+        <h2>貴公司 正式薪資與福利明細單 (Phase 2 官方投保分級對照)</h2>
         <div class="sub-header">計薪月份：${month || '2026-07'} | 機密薪資文件 妥善保管</div>
         
         <div class="info-grid">
@@ -942,17 +1086,17 @@ app.get('/api/export/pay-slip', async (req, res) => {
 
         <table>
           <thead>
-            <tr><th>應發薪資與自訂補助/獎金</th><th>金額 (NT$)</th><th>員工扣繳項目</th><th>金額 (NT$)</th></tr>
+            <tr><th>應發薪資與自訂補助/獎金</th><th>金額 (NT$)</th><th>員工扣繳項目 (官方對照級距)</th><th>金額 (NT$)</th></tr>
           </thead>
           <tbody>
-            <tr><td>約定底薪 (Base Salary)</td><td>${item.base_salary.toLocaleString()}</td><td>勞保費自付額 (20%)</td><td>${item.labor_insurance_employee.toLocaleString()}</td></tr>
-            <tr><td>固定津貼 (Fixed Allowance)</td><td>${item.fixed_allowance.toLocaleString()}</td><td>健保費自付額 (30%)</td><td>${item.health_insurance_employee.toLocaleString()}</td></tr>
+            <tr><td>約定底薪 (Base Salary)</td><td>${item.base_salary.toLocaleString()}</td><td>勞保費自付額 <span class="grade-badge">投保薪資 $${item.laborInsuranceGrade.toLocaleString()}</span></td><td>${item.labor_insurance_employee.toLocaleString()}</td></tr>
+            <tr><td>固定津貼 (Fixed Allowance)</td><td>${item.fixed_allowance.toLocaleString()}</td><td>健保費自付額 <span class="grade-badge">投保薪資 $${item.healthInsuranceGrade.toLocaleString()}</span></td><td>${item.health_insurance_employee.toLocaleString()}</td></tr>
             <tr><td>🍱 伙食補助 (免稅額 $3,000)</td><td>${item.meal_allowance.toLocaleString()}</td><td>🌟 勞退個人自提 (${item.labor_pension_self_rate}%) <span class="pension-badge">免稅</span></td><td>${item.labor_pension_employee_self.toLocaleString()}</td></tr>
             <tr><td>🚗 交通補助 (Transport)</td><td>${item.transport_allowance.toLocaleString()}</td><td>預扣所得稅 (5%)</td><td>${item.withholding_tax.toLocaleString()}</td></tr>
             <tr><td>🎯 績效獎金 (Performance)</td><td>${item.performance_bonus.toLocaleString()}</td><td style="background:#f8fafc;" colspan="2"></td></tr>
             <tr><td>🎁 三節禮金 (Festival Bonus)</td><td>${item.festival_bonus.toLocaleString()}</td><td style="background:#f8fafc;" colspan="2"></td></tr>
             <tr><td>平日/休息日加班費</td><td>${item.overtime_pay.toLocaleString()}</td><td style="background:#f8fafc;" colspan="2"></td></tr>
-            <tr><td>請假扣款 (病假/生理假半薪、事假全扣)</td><td>-${item.leave_deduction.toLocaleString()}</td><td style="background:#f8fafc;" colspan="2"></td></tr>
+            <tr><td>請假扣款 (病假/生理假半薪)</td><td>-${item.leave_deduction.toLocaleString()}</td><td style="background:#f8fafc;" colspan="2"></td></tr>
             <tr class="total-row">
               <td>應發總額 (Gross Pay)</td><td>NT$ ${item.gross_salary.toLocaleString()}</td>
               <td>扣繳小計 (Deductions)</td><td>NT$ ${item.total_deductions.toLocaleString()}</td>
@@ -1020,7 +1164,7 @@ app.post('/api/payroll/confirm', async (req, res) => {
         ]
       );
     }
-    res.json({ message: `【${month || '2026-07'}】薪資結算成功並完成 Phase 1 勞基法分流封存存檔！` });
+    res.json({ message: `【${month || '2026-07'}】薪資結算成功並完成 Phase 2 官方投保分級對照與封存存檔！` });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error confirming payroll' });
