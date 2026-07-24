@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>台灣 HRMS 人事出勤、三級請假簽核、角色權限隔離與多層級組織樹系統</title>
+  <title>台灣 HRMS 人事出勤、三級請假簽核、變形工時與班表維護系統</title>
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- FontAwesome Icons -->
@@ -82,7 +82,7 @@
         </div>
         <div>
           <h1 class="font-bold text-lg leading-none text-slate-100">Taiwan HRMS</h1>
-          <span class="text-xs text-blue-400 font-medium">Colima Local Edition (零薪資洩漏快取防護)</span>
+          <span class="text-xs text-blue-400 font-medium">Phase 1: 勞基法一例一休/變形工時合規版</span>
         </div>
       </div>
 
@@ -226,21 +226,21 @@
       </form>
     </div>
 
-    <!-- Tab 1: 打卡考勤頁面 -->
+    <!-- Tab 1: 打卡考勤頁面 (含加班上限與變形班表設定) -->
     <div id="tab-attendance" class="space-y-6">
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div class="lg:col-span-2 glass-card rounded-2xl p-6 flex flex-col justify-between relative overflow-hidden">
           <div class="flex justify-between items-start">
             <div>
-              <span class="text-xs font-semibold uppercase tracking-wider text-blue-400">即時打卡面板</span>
-              <h2 id="currentDate" class="text-xl font-bold text-slate-200 mt-1">2026 年 7 月 23 日</h2>
+              <span class="text-xs font-semibold uppercase tracking-wider text-blue-400">即時打卡與加班登記</span>
+              <h2 id="currentDate" class="text-xl font-bold text-slate-200 mt-1">2026 年 7 月 24 日</h2>
             </div>
             <span class="px-3 py-1 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold rounded-full flex items-center gap-1.5">
               <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> 本地內網連線
             </span>
           </div>
 
-          <div class="my-8 text-center">
+          <div class="my-6 text-center">
             <div id="clockDisplay" class="text-5xl md:text-6xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-300 tracking-tight">
               00:00:00
             </div>
@@ -249,14 +249,30 @@
             </p>
           </div>
 
+          <!-- Phase 1 增強：下班打卡時可選填當日加班小時數與加班日類別 -->
+          <div class="grid grid-cols-2 gap-3 mb-4 bg-slate-900/60 p-3 rounded-xl border border-slate-800">
+            <div>
+              <label class="block text-[11px] font-semibold text-amber-400 mb-1">⏱️ 登記今日加班小時數 (受46小時上限警示)</label>
+              <input type="number" id="otHoursInput" step="0.5" min="0" max="12" value="0" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200">
+            </div>
+            <div>
+              <label class="block text-[11px] font-semibold text-indigo-400 mb-1">📅 加班類別 (勞基法加倍算式)</label>
+              <select id="otTypeInput" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200">
+                <option value="workday">平日延長工時 (前2hr 1.34 / 後2hr 1.67)</option>
+                <option value="rest_day">休息日加班 (1.34 -> 1.67 -> 2.67)</option>
+                <option value="national_holiday">國定假日/特休加班 (全薪加倍)</option>
+              </select>
+            </div>
+          </div>
+
           <div class="grid grid-cols-2 gap-4">
-            <button onclick="handleClock('in')" class="py-4 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 text-white font-bold rounded-xl shadow-lg transition active:scale-95 flex items-center justify-center gap-2">
+            <button onclick="handleClock('in')" class="py-3.5 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 text-white font-bold rounded-xl shadow-lg transition active:scale-95 flex items-center justify-center gap-2">
               <i class="fa-solid fa-right-to-bracket text-lg"></i>
               <span>上班打卡</span>
             </button>
-            <button onclick="handleClock('out')" class="py-4 bg-gradient-to-r from-slate-700 to-slate-800 hover:from-slate-600 text-slate-200 font-bold rounded-xl border border-slate-600 transition active:scale-95 flex items-center justify-center gap-2">
+            <button onclick="handleClock('out')" class="py-3.5 bg-gradient-to-r from-slate-700 to-slate-800 hover:from-slate-600 text-slate-200 font-bold rounded-xl border border-slate-600 transition active:scale-95 flex items-center justify-center gap-2">
               <i class="fa-solid fa-right-from-bracket text-lg"></i>
-              <span>下班打卡</span>
+              <span>下班打卡 (連動加班)</span>
             </button>
           </div>
         </div>
@@ -300,18 +316,19 @@
                 <th class="py-3 px-4">姓名</th>
                 <th class="py-3 px-4">上班打卡</th>
                 <th class="py-3 px-4">下班打卡</th>
+                <th class="py-3 px-4">加班時數 / 類別</th>
                 <th class="py-3 px-4">打卡地點 / 地理圍欄</th>
               </tr>
             </thead>
             <tbody id="attendanceTable" class="divide-y divide-slate-800 text-sm text-slate-300">
-              <tr><td colspan="5" class="py-4 text-center text-slate-500">載入中...</td></tr>
+              <tr><td colspan="6" class="py-4 text-center text-slate-500">載入中...</td></tr>
             </tbody>
           </table>
         </div>
       </div>
     </div>
 
-    <!-- Tab 2: 請假與分層簽核頁面 (含權限隔離與天數規則設定) -->
+    <!-- Tab 2: 請假與分層簽核頁面 (含 Phase 1 台灣完整假別支援) -->
     <div id="tab-leave" class="space-y-6 hidden">
 
       <!-- ⚙️ 簽核天數層級可自訂設定面板 (僅限 Admin / HR 檢視) -->
@@ -338,19 +355,24 @@
         <div class="glass-card rounded-2xl p-6">
           <h3 class="font-bold text-base text-slate-200 border-b border-slate-700/60 pb-3 mb-4 flex items-center gap-2">
             <i class="fa-solid fa-file-pen text-indigo-400"></i>
-            <span>申請線上請假</span>
+            <span>申請線上請假 (Phase 1 完整假別)</span>
           </h3>
 
           <form id="leaveForm" onsubmit="submitLeave(event)" class="space-y-4">
             <div>
-              <label class="block text-xs font-semibold text-slate-400 mb-1">請假類別 (符合勞基法)</label>
-              <select id="leaveType" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none">
-                <option value="annual">特休假 (全薪)</option>
-                <option value="sick">普通傷病假 (半薪)</option>
-                <option value="personal">事假 (不給薪)</option>
-                <option value="marital">婚假 (8天全薪)</option>
-                <option value="bereavement">喪假 (全薪)</option>
-                <option value="maternity">產假 / 陪產檢假</option>
+              <label class="block text-xs font-semibold text-slate-400 mb-1">請假類別 (符合《勞工請假規則》)</label>
+              <select id="leaveType" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none">
+                <option value="annual">🌴 特休假 (全薪)</option>
+                <option value="sick">🤒 普通傷病假 (半薪)</option>
+                <option value="personal">🏠 事假 (不給薪)</option>
+                <option value="marital">💍 婚假 (8天全薪)</option>
+                <option value="bereavement">🕯️ 喪假 (全薪)</option>
+                <option value="maternity">👶 產假 (全薪)</option>
+                <option value="paternity">👨‍🍼 陪產檢及陪產假 (7天全薪)</option>
+                <option value="prenatal">🤰 產檢假 (7天全薪)</option>
+                <option value="menstrual">🌸 生理假 (每月1天/半薪)</option>
+                <option value="family_care">🏡 家庭照顧假 (7天/併入事假)</option>
+                <option value="occupational_injury">🏥 公傷病假 (原領工資補償全薪)</option>
               </select>
             </div>
 
@@ -688,30 +710,24 @@
       if (display) display.textContent = `${Math.round(currentZoom * 100)}%`;
     }
 
-    // 🛡️ 角色與存取控制視圖切換 (RBAC UI Enforcement)
     function applyRolePermissions(user) {
       if (!user) return;
       const isHRorAdmin = user.role === 'admin' || user.role === 'hr';
       const isManager = user.role === 'manager';
 
-      // 1. 薪資發薪頁籤：僅限 HR / Admin 顯示
       const payrollBtn = document.getElementById('btn-payroll');
       if (payrollBtn) payrollBtn.classList.toggle('hidden', !isHRorAdmin);
 
-      // 若非 HR/Admin，卻停留在薪資頁面，強制跳回「打卡考勤」頁面並清空快取！
       if (!isHRorAdmin && !document.getElementById('tab-payroll').classList.contains('hidden')) {
         switchTab('attendance');
       }
 
-      // 2. 簽核層級規則設定面板：僅限 HR / Admin 顯示
       const rulesPanel = document.getElementById('approvalRulesPanel');
       if (rulesPanel) rulesPanel.classList.toggle('hidden', !isHRorAdmin);
 
-      // 3. 新增部門按鈕：僅限 HR / Admin
       const btnCreateDept = document.getElementById('btnCreateDept');
       if (btnCreateDept) btnCreateDept.classList.toggle('hidden', !isHRorAdmin);
 
-      // 4. 更新打卡與請假資料範圍提示字串
       const attScope = document.getElementById('attendanceScopeText');
       if (attScope) {
         if (isHRorAdmin) attScope.textContent = '資料範圍：全公司 50 人紀錄 (HR/管理員視圖)';
@@ -727,7 +743,6 @@
       }
     }
 
-    // 初始化使用者下拉選單
     async function initUserSelector() {
       try {
         const res = await fetch(`${API_BASE}/employees`);
@@ -756,10 +771,9 @@
       }
     }
 
-    // 🔥 關鍵安全切換：切換使用者時向後端重新發送請求，清空上一人的薪資快取！
     async function onUserSwitched(empId) {
-      currentPayrollData = null; // 清空薪資試算數據
-      closeInlineEditor();       // 關閉內嵌編輯器
+      currentPayrollData = null;
+      closeInlineEditor();
 
       await loadEmployees();
       await loadDepartments();
@@ -771,7 +785,6 @@
 
     async function loadEmployees() {
       try {
-        // 🔥 帶入 currentEmployeeId 作為 requester_id，由後端依據身分進行 AES-256 解密或傳回 *** 遮罩
         const res = await fetch(`${API_BASE}/employees?requester_id=${currentEmployeeId}`);
         const employees = await res.json();
         cachedEmployees = employees;
@@ -798,9 +811,8 @@
       const currentEmp = cachedEmployees.find(e => e.id === currentEmployeeId);
       const isHRorAdmin = currentEmp && (currentEmp.role === 'admin' || currentEmp.role === 'hr');
 
-      // 安全攔截：若非 HR/Admin 欲進入薪資頁面，則拒絕
       if (tab === 'payroll' && !isHRorAdmin) {
-        alert('🔒 存取拒絕：您無存取全公司薪資與發薪試算模組之權限！');
+        alert('🔒 存取拒絕：您無存取全公司薪資與發薪模組之權限！');
         return;
       }
 
@@ -824,7 +836,6 @@
       }
     }
 
-    // 🌳 載入並渲染多層級組織樹 (使用當前身份權限過濾後之資料)
     async function loadDepartments() {
       try {
         const res = await fetch(`${API_BASE}/departments?requester_id=${currentEmployeeId}`);
@@ -1109,6 +1120,9 @@
 
     async function handleClock(type) {
       if (!currentEmployeeId) return alert('請先選擇員工！');
+      const otHours = document.getElementById('otHoursInput').value;
+      const otType = document.getElementById('otTypeInput').value;
+
       try {
         const res = await fetch(`${API_BASE}/attendance/clock`, {
           method: 'POST',
@@ -1116,10 +1130,15 @@
           body: JSON.stringify({
             employee_id: currentEmployeeId,
             type: type,
-            location: '台北總部 (GPS: 25.0330, 121.5654)'
+            location: '台北總部 (GPS: 25.0330, 121.5654)',
+            overtime_hours: otHours,
+            overtime_type: otType
           })
         });
         const data = await res.json();
+        if (data.error) {
+          return alert(data.error);
+        }
         alert(data.message);
         loadAttendance();
       } catch (err) {
@@ -1135,7 +1154,7 @@
         tbody.innerHTML = '';
 
         if (logs.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-slate-500">尚無存取權限內之打卡紀錄</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="6" class="py-4 text-center text-slate-500">尚無存取權限內之打卡紀錄</td></tr>';
           return;
         }
 
@@ -1144,11 +1163,19 @@
           const clockInTime = log.clock_in ? new Date(log.clock_in).toLocaleString('zh-TW') : '-';
           const clockOutTime = log.clock_out ? new Date(log.clock_out).toLocaleString('zh-TW') : '-';
 
+          let otTypeText = '平日延長工時';
+          if (log.overtime_type === 'rest_day') otTypeText = '休息日加班';
+          if (log.overtime_type === 'national_holiday') otTypeText = '國定假日加班';
+
           tr.innerHTML = `
             <td class="py-3 px-4 font-mono text-xs text-blue-400">${log.employee_no}</td>
             <td class="py-3 px-4 font-medium text-slate-200">${log.employee_name}</td>
             <td class="py-3 px-4 font-mono text-xs text-emerald-400">${clockInTime}</td>
             <td class="py-3 px-4 font-mono text-xs text-amber-400">${clockOutTime}</td>
+            <td class="py-3 px-4 text-xs font-mono">
+              <span class="text-amber-300 font-bold">${log.overtime_hours || 0} hr</span> 
+              <span class="text-[10px] text-slate-400 font-normal">(${otTypeText})</span>
+            </td>
             <td class="py-3 px-4 text-xs text-slate-400">${log.clock_in_location || '內網打卡'}</td>
           `;
           tbody.appendChild(tr);
@@ -1182,6 +1209,9 @@
           })
         });
         const data = await res.json();
+        if (data.error) {
+          return alert(data.error);
+        }
         alert(`${data.message}\n天數：${data.leaveDays} 天`);
         document.getElementById('leaveForm').reset();
         loadLeaveRequests();
@@ -1221,12 +1251,17 @@
           if (l.status === 'rejected') statusBadge = '<span class="px-2 py-0.5 rounded text-xs bg-rose-500/20 text-rose-400 font-bold">已駁回</span>';
 
           const leaveTypeName = {
-            annual: '特休假',
-            sick: '病假 (半薪)',
-            personal: '事假',
-            marital: '婚假',
-            bereavement: '喪假',
-            maternity: '產假'
+            annual: '🌴 特休假 (全薪)',
+            sick: '🤒 普通傷病假 (半薪)',
+            personal: '🏠 事假 (不給薪)',
+            marital: '💍 婚假 (全薪)',
+            bereavement: '🕯️ 喪假 (全薪)',
+            maternity: '👶 產假 (全薪)',
+            paternity: '👨‍🍼 陪產檢及陪產假 (全薪)',
+            prenatal: '🤰 產檢假 (全薪)',
+            menstrual: '🌸 生理假 (半薪)',
+            family_care: '🏡 家庭照顧假 (不給薪)',
+            occupational_injury: '🏥 公傷病假 (全薪補償)'
           }[l.leave_type] || l.leave_type;
 
           let btnText = '核准';
@@ -1246,7 +1281,7 @@
               <div class="font-medium text-slate-200">${l.employee_name}</div>
               <div class="text-[10px] text-indigo-400">${l.department_name || '總管理處'}</div>
             </td>
-            <td class="py-3 px-3 font-semibold text-blue-400">${leaveTypeName}</td>
+            <td class="py-3 px-3 font-semibold text-blue-400 text-xs">${leaveTypeName}</td>
             <td class="py-3 px-3 text-xs font-mono">
               <span class="font-bold text-amber-300 text-sm">${leaveDays} 天</span> (${l.total_hours}hr)
             </td>

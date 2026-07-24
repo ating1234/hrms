@@ -25,7 +25,7 @@ pool.query('SELECT NOW()', (err, res) => {
   if (err) {
     console.error('❌ PostgreSQL 連線失敗:', err.stack);
   } else {
-    console.log('✅ 成功連線至 Colima PostgreSQL 資料庫 (pgcrypto 全欄位加密開啟):', res.rows[0].now);
+    console.log('✅ 成功連線至 Colima PostgreSQL 資料庫 (Phase 1 勞工法規嚴格合規與變形班表開啟):', res.rows[0].now);
   }
 });
 
@@ -82,7 +82,20 @@ function sanitizeEmployeeSensitiveData(emp, isAuthorized) {
 }
 
 // ----------------------------------------------------
-// 1. 部門與員工 API (使用 pgcrypto 動態 AES-256 解密)
+// 1. 班表維護與動態變形工時 API (Phase 1 新增)
+// ----------------------------------------------------
+
+app.get('/api/shifts', async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM shifts WHERE is_active = TRUE ORDER BY start_time ASC`);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Error fetching shifts' });
+  }
+});
+
+// ----------------------------------------------------
+// 2. 部門與員工 API (使用 pgcrypto 動態 AES-256 解密)
 // ----------------------------------------------------
 
 app.get('/api/departments', async (req, res) => {
@@ -206,7 +219,6 @@ app.get('/api/employees', async (req, res) => {
   }
 });
 
-// 寫入時：全自動 AES-256 二進位密文儲存，抹除明文欄位
 app.put('/api/employees/:id', async (req, res) => {
   const { id } = req.params;
   const { 
@@ -252,7 +264,7 @@ app.put('/api/employees/:id', async (req, res) => {
 });
 
 // ----------------------------------------------------
-// 🛡️ 2. RBAC 資料範圍過濾：出勤與請假簽核 API
+// 3. 打卡與請假 API (Phase 1 強化：勞基法46小時警示與完整假別)
 // ----------------------------------------------------
 
 app.get('/api/attendance', async (req, res) => {
@@ -296,8 +308,26 @@ app.get('/api/attendance', async (req, res) => {
 });
 
 app.post('/api/attendance/clock', async (req, res) => {
-  const { employee_id, type, location, lat, lng } = req.body;
+  const { employee_id, type, location, lat, lng, overtime_hours, overtime_type } = req.body;
   try {
+    // 🌟 Phase 1 加班上限檢查：《勞基法》第32條每月不得超過46小時
+    if (overtime_hours && parseFloat(overtime_hours) > 0) {
+      const now = new Date();
+      const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+      const sumRes = await pool.query(`
+        SELECT COALESCE(SUM(overtime_hours), 0) as total_ot 
+        FROM attendance_logs 
+        WHERE employee_id = $1 AND created_at >= $2
+      `, [employee_id, firstDayOfMonth]);
+
+      const monthlyOT = parseFloat(sumRes.rows[0].total_ot) + parseFloat(overtime_hours);
+      if (monthlyOT > 46.0) {
+        return res.status(400).json({
+          error: `⚠️ 觸發《勞基法》第32條警戒：當月累計加班時間為 ${monthlyOT.toFixed(1)} 小時，已超過法定上限 46 小時/月！已依法進行強制阻擋。`
+        });
+      }
+    }
+
     const today = new Date().toISOString().split('T')[0];
     const existingLog = await pool.query(
       `SELECT * FROM attendance_logs 
@@ -318,16 +348,16 @@ app.post('/api/attendance/clock', async (req, res) => {
       if (existingLog.rows.length === 0) {
         const newLog = await pool.query(
           `INSERT INTO attendance_logs 
-           (employee_id, clock_out, clock_in_location) 
-           VALUES ($1, NOW(), $2)`,
-          [employee_id, location || '台北辦公室 (下班)']
+           (employee_id, clock_out, clock_in_location, overtime_hours, overtime_type) 
+           VALUES ($1, NOW(), $2, $3, $4)`,
+          [employee_id, location || '台北辦公室 (下班)', overtime_hours || 0, overtime_type || 'workday']
         );
         return res.json({ message: '下班打卡成功！', data: newLog.rows[0] });
       } else {
         const logId = existingLog.rows[0].id;
         const updatedLog = await pool.query(
-          `UPDATE attendance_logs SET clock_out = NOW() WHERE id = $1 RETURNING *`,
-          [logId]
+          `UPDATE attendance_logs SET clock_out = NOW(), overtime_hours = $1, overtime_type = $2 WHERE id = $3 RETURNING *`,
+          [overtime_hours || 0, overtime_type || 'workday', logId]
         );
         return res.json({ message: '下班打卡成功！', data: updatedLog.rows[0] });
       }
@@ -393,6 +423,19 @@ app.post('/api/leave', async (req, res) => {
     
     const empRes = await pool.query(`SELECT e.*, d.code as dept_code, d.name as dept_name FROM employees e LEFT JOIN departments d ON e.department_id = d.id WHERE e.id = $1`, [employee_id]);
     const emp = empRes.rows[0];
+
+    // 生理假特殊限制檢核：《性別平等工作法》第14條每月1天
+    if (leave_type === 'menstrual') {
+      const now = new Date();
+      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+      const menstrualCheck = await pool.query(`
+        SELECT COUNT(*)::int as count FROM leave_requests 
+        WHERE employee_id = $1 AND leave_type = 'menstrual' AND created_at >= $2 AND status != 'rejected'
+      `, [employee_id, firstDay]);
+      if (menstrualCheck.rows[0].count >= 1) {
+        return res.status(400).json({ error: '⚠️ 依《性別平等工作法》規定，生理假每月以 1 日為限。本月已有申請紀錄！' });
+      }
+    }
 
     let targetManagerId = emp.manager_id;
     if (!targetManagerId && emp.department_id) {
@@ -573,7 +616,7 @@ app.put('/api/leave/:id/review', async (req, res) => {
 });
 
 // ----------------------------------------------------
-// 3. 簽核天數層級規則 API
+// 4. 簽核天數層級規則與通知 API
 // ----------------------------------------------------
 
 app.get('/api/approval-levels', async (req, res) => {
@@ -601,10 +644,6 @@ app.put('/api/approval-levels', async (req, res) => {
     res.status(500).json({ error: 'Server error updating approval levels' });
   }
 });
-
-// ----------------------------------------------------
-// 4. 站內通知中心 API
-// ----------------------------------------------------
 
 app.get('/api/notifications', async (req, res) => {
   const { recipient_id } = req.query;
@@ -636,10 +675,10 @@ app.put('/api/notifications/:id/read', async (req, res) => {
 });
 
 // ----------------------------------------------------
-// 5. 100% 台灣薪資計算引擎 (配合 AES-256 加密解密與 RBAC)
+// 5. 100% 台灣薪資與加班費分流引擎 (Phase 1 強化)
 // ----------------------------------------------------
 
-function calculateTaiwanPayrollFull(employee, monthLeaves = [], overtimeHours = 6) {
+function calculateTaiwanPayrollFull(employee, monthLeaves = [], monthOTLogs = []) {
   const baseSalary = parseFloat(employee.base_salary || 0);
   const fixedAllowance = parseFloat(employee.fixed_allowance || 0);
   const mealAllowance = parseFloat(employee.meal_allowance || 3000);
@@ -654,25 +693,37 @@ function calculateTaiwanPayrollFull(employee, monthLeaves = [], overtimeHours = 
 
   const hourlyRate = baseSalary / 240;
 
-  let otPay = 0;
-  if (overtimeHours <= 2) {
-    otPay = overtimeHours * hourlyRate * 1.34;
-  } else if (overtimeHours <= 4) {
-    otPay = (2 * hourlyRate * 1.34) + ((overtimeHours - 2) * hourlyRate * 1.67);
-  } else {
-    otPay = (2 * hourlyRate * 1.34) + (2 * hourlyRate * 1.67) + ((overtimeHours - 4) * hourlyRate * 2.67);
-  }
-  const overtimePay = Math.round(otPay);
+  // 🌟 Phase 1 加班費倍率精準分流 (平日 / 休息日 / 國定假日 / 例假日)
+  let totalOTPay = 0;
+  monthOTLogs.forEach(log => {
+    const hours = parseFloat(log.overtime_hours || 0);
+    const type = log.overtime_type || 'workday';
+    
+    if (type === 'workday') {
+      if (hours <= 2) totalOTPay += hours * hourlyRate * 1.34;
+      else totalOTPay += (2 * hourlyRate * 1.34) + ((hours - 2) * hourlyRate * 1.67);
+    } else if (type === 'rest_day') {
+      if (hours <= 2) totalOTPay += hours * hourlyRate * 1.34;
+      else if (hours <= 8) totalOTPay += (2 * hourlyRate * 1.34) + ((hours - 2) * hourlyRate * 1.67);
+      else totalOTPay += (2 * hourlyRate * 1.34) + (6 * hourlyRate * 1.67) + ((hours - 8) * hourlyRate * 2.67);
+    } else if (type === 'national_holiday') {
+      if (hours <= 8) totalOTPay += 8 * hourlyRate * 1.0;
+      else totalOTPay += (8 * hourlyRate * 1.0) + ((hours - 8) * hourlyRate * 1.67);
+    }
+  });
+  const overtimePay = Math.round(totalOTPay);
 
+  // 🌟 Phase 1 精準假別扣薪演算法符合《勞工請假規則》
   let leaveDeduction = 0;
   monthLeaves.forEach(l => {
     if (l.status === 'approved') {
       const hours = parseFloat(l.total_hours || 0);
-      if (l.leave_type === 'sick') {
-        leaveDeduction += hours * hourlyRate * 0.5;
-      } else if (l.leave_type === 'personal') {
-        leaveDeduction += hours * hourlyRate * 1.0;
+      if (l.leave_type === 'sick' || l.leave_type === 'menstrual') {
+        leaveDeduction += hours * hourlyRate * 0.5; // 病假與生理假半薪
+      } else if (l.leave_type === 'personal' || l.leave_type === 'family_care') {
+        leaveDeduction += hours * hourlyRate * 1.0; // 事假與家庭照顧假不給薪
       }
+      // 特休、婚假、喪假、產假、陪產假、產檢假、公傷假均為全薪，不扣款！
     }
   });
   leaveDeduction = Math.round(leaveDeduction);
@@ -764,10 +815,12 @@ app.get('/api/payroll/calculate', async (req, res) => {
     `, [DB_SECRET_KEY])).rows;
 
     const leaves = (await pool.query(`SELECT * FROM leave_requests WHERE status = 'approved'`)).rows;
+    const attendanceLogs = (await pool.query(`SELECT * FROM attendance_logs WHERE overtime_hours > 0`)).rows;
 
     const payrollDetails = employees.map(emp => {
       const empLeaves = leaves.filter(l => l.employee_id === emp.id);
-      return calculateTaiwanPayrollFull(emp, empLeaves, 6);
+      const empOTLogs = attendanceLogs.filter(a => a.employee_id === emp.id);
+      return calculateTaiwanPayrollFull(emp, empLeaves, empOTLogs);
     });
 
     const summary = payrollDetails.reduce((acc, curr) => {
@@ -808,10 +861,12 @@ app.get('/api/export/bank-transfer', async (req, res) => {
     `, [DB_SECRET_KEY])).rows;
 
     const leaves = (await pool.query(`SELECT * FROM leave_requests WHERE status = 'approved'`)).rows;
+    const attendanceLogs = (await pool.query(`SELECT * FROM attendance_logs WHERE overtime_hours > 0`)).rows;
 
     const payrollDetails = employees.map(emp => {
       const empLeaves = leaves.filter(l => l.employee_id === emp.id);
-      return calculateTaiwanPayrollFull(emp, empLeaves, 6);
+      const empOTLogs = attendanceLogs.filter(a => a.employee_id === emp.id);
+      return calculateTaiwanPayrollFull(emp, empLeaves, empOTLogs);
     });
 
     let csv = '\uFEFF項次,員工編號,員工姓名,銀行代碼,轉帳帳號,實發金額(NT$),轉帳備註\n';
@@ -846,7 +901,8 @@ app.get('/api/export/pay-slip', async (req, res) => {
 
     const employee = empResult.rows[0];
     const leaves = (await pool.query(`SELECT * FROM leave_requests WHERE employee_id = $1 AND status = 'approved'`, [employee_id])).rows;
-    const item = calculateTaiwanPayrollFull(employee, leaves, 6);
+    const attendanceLogs = (await pool.query(`SELECT * FROM attendance_logs WHERE employee_id = $1 AND overtime_hours > 0`, [employee_id])).rows;
+    const item = calculateTaiwanPayrollFull(employee, leaves, attendanceLogs);
 
     const html = `
     <!DOCTYPE html>
@@ -872,7 +928,7 @@ app.get('/api/export/pay-slip', async (req, res) => {
     </head>
     <body>
       <div class="slip-box">
-        <h2>貴公司 正式薪資與福利明細單 (AES-256 加密存儲與法規合規)</h2>
+        <h2>貴公司 正式薪資與福利明細單 (Phase 1 勞基法全假別合規)</h2>
         <div class="sub-header">計薪月份：${month || '2026-07'} | 機密薪資文件 妥善保管</div>
         
         <div class="info-grid">
@@ -896,7 +952,7 @@ app.get('/api/export/pay-slip', async (req, res) => {
             <tr><td>🎯 績效獎金 (Performance)</td><td>${item.performance_bonus.toLocaleString()}</td><td style="background:#f8fafc;" colspan="2"></td></tr>
             <tr><td>🎁 三節禮金 (Festival Bonus)</td><td>${item.festival_bonus.toLocaleString()}</td><td style="background:#f8fafc;" colspan="2"></td></tr>
             <tr><td>平日/休息日加班費</td><td>${item.overtime_pay.toLocaleString()}</td><td style="background:#f8fafc;" colspan="2"></td></tr>
-            <tr><td>請假扣款 (病/事假)</td><td>-${item.leave_deduction.toLocaleString()}</td><td style="background:#f8fafc;" colspan="2"></td></tr>
+            <tr><td>請假扣款 (病假/生理假半薪、事假全扣)</td><td>-${item.leave_deduction.toLocaleString()}</td><td style="background:#f8fafc;" colspan="2"></td></tr>
             <tr class="total-row">
               <td>應發總額 (Gross Pay)</td><td>NT$ ${item.gross_salary.toLocaleString()}</td>
               <td>扣繳小計 (Deductions)</td><td>NT$ ${item.total_deductions.toLocaleString()}</td>
@@ -937,7 +993,6 @@ app.get('/api/export/pay-slip', async (req, res) => {
   }
 });
 
-// 發薪結算存檔：全自動以 AES-256 加密存入 payroll_records
 app.post('/api/payroll/confirm', async (req, res) => {
   const { month, details } = req.body;
   try {
@@ -965,7 +1020,7 @@ app.post('/api/payroll/confirm', async (req, res) => {
         ]
       );
     }
-    res.json({ message: `【${month || '2026-07'}】薪資結算成功並完成 AES-256 密碼學加密封存存檔！` });
+    res.json({ message: `【${month || '2026-07'}】薪資結算成功並完成 Phase 1 勞基法分流封存存檔！` });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error confirming payroll' });
