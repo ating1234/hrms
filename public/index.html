@@ -393,8 +393,20 @@
             </div>
 
             <div>
+              <label class="block text-xs font-semibold text-indigo-400 mb-1">🤝 指定職務代理人 (同部門同事)</label>
+              <select id="handoverEmployeeId" class="w-full bg-slate-800 border border-indigo-500/40 rounded-lg px-3 py-2 text-xs text-slate-200">
+                <option value="">(無職務代理人)</option>
+              </select>
+            </div>
+
+            <div>
+              <label class="block text-xs font-semibold text-amber-400 mb-1">📎 附加上傳證明網址/檔名 (病假診斷書/喜帖/訃聞)</label>
+              <input type="text" id="attachmentUrl" placeholder="如: https://... 或 診斷書_2026.pdf" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200">
+            </div>
+
+            <div>
               <label class="block text-xs font-semibold text-slate-400 mb-1">請假事由</label>
-              <textarea id="leaveReason" rows="3" placeholder="請填寫詳細原因..." class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200"></textarea>
+              <textarea id="leaveReason" rows="2" placeholder="請填寫詳細原因..." class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200"></textarea>
             </div>
 
             <button type="submit" class="w-full py-3 bg-gradient-to-r from-indigo-600 to-blue-600 text-white font-bold rounded-xl shadow-lg transition active:scale-95">
@@ -799,6 +811,19 @@
         if (currentEmp) {
           updateUserSeniorityDisplay(currentEmp);
           applyRolePermissions(currentEmp);
+
+          const handoverSelect = document.getElementById('handoverEmployeeId');
+          if (handoverSelect) {
+            handoverSelect.innerHTML = '<option value="">(無職務代理人)</option>';
+            employees
+              .filter(e => e.id !== currentEmp.id && (e.department_id === currentEmp.department_id || !currentEmp.department_id))
+              .forEach(colleague => {
+                const opt = document.createElement('option');
+                opt.value = colleague.id;
+                opt.textContent = `${colleague.name} (${colleague.job_title || colleague.role})`;
+                handoverSelect.appendChild(opt);
+              });
+          }
         }
       } catch (err) {
         console.error(err);
@@ -1200,6 +1225,8 @@
       const end_time = document.getElementById('endTime').value;
       const total_hours = document.getElementById('totalHours').value;
       const reason = document.getElementById('leaveReason').value;
+      const handover_employee_id = document.getElementById('handoverEmployeeId').value;
+      const attachment_url = document.getElementById('attachmentUrl').value;
 
       try {
         const res = await fetch(`${API_BASE}/leave`, {
@@ -1211,7 +1238,9 @@
             start_time,
             end_time,
             total_hours,
-            reason
+            reason,
+            handover_employee_id,
+            attachment_url
           })
         });
         const data = await res.json();
@@ -1282,10 +1311,25 @@
             if (l.current_stage === 'adm' && currentEmp.department_code === 'ADM') canApprove = true;
           }
 
+          let handoverBadge = '';
+          if (l.handover_employee_name) {
+            if (l.handover_status === 'pending') handoverBadge = `<div class="text-[10px] text-amber-300">代理: ${l.handover_employee_name} (待接手)</div>`;
+            else if (l.handover_status === 'accepted') handoverBadge = `<div class="text-[10px] text-emerald-400">代理: ${l.handover_employee_name} (已接手)</div>`;
+          }
+
+          let attachmentLink = '';
+          if (l.attachment_url) {
+            attachmentLink = `<a href="${l.attachment_url}" target="_blank" class="text-[10px] text-amber-400 hover:underline block"><i class="fa-solid fa-paperclip mr-0.5"></i>證明附件</a>`;
+          }
+
+          const isHandoverTarget = l.handover_employee_id === currentEmployeeId && l.handover_status === 'pending';
+
           tr.innerHTML = `
             <td class="py-3 px-3">
               <div class="font-medium text-slate-200">${l.employee_name}</div>
               <div class="text-[10px] text-indigo-400">${l.department_name || '總管理處'}</div>
+              ${handoverBadge}
+              ${attachmentLink}
             </td>
             <td class="py-3 px-3 font-semibold text-blue-400 text-xs">${leaveTypeName}</td>
             <td class="py-3 px-3 text-xs font-mono">
@@ -1294,12 +1338,16 @@
             <td class="py-3 px-3">${stageBadge}</td>
             <td class="py-3 px-3">${statusBadge}</td>
             <td class="py-3 px-3 text-right">
-              ${l.status.startsWith('pending') ? (canApprove ? `
+              ${isHandoverTarget ? `
+                <button onclick="respondHandover('${l.id}', 'accepted')" class="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-xs font-semibold mr-1 shadow transition">
+                  🤝 確認接手代理
+                </button>
+              ` : (l.status.startsWith('pending') ? (canApprove ? `
                 <button onclick="reviewLeave('${l.id}', 'approved')" class="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-semibold mr-1 shadow transition">
                   ${btnText}
                 </button>
                 <button onclick="reviewLeave('${l.id}', 'rejected')" class="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded text-xs font-semibold shadow transition">駁回</button>
-              ` : `<span class="text-xs text-slate-500 font-mono">等待該主管簽核</span>`) : `<span class="text-xs text-slate-500">已結案</span>`}
+              ` : `<span class="text-xs text-slate-500 font-mono">等待主管簽核</span>`) : `<span class="text-xs text-slate-500">已結案</span>`)}
             </td>
           `;
           tbody.appendChild(tr);
@@ -1308,6 +1356,25 @@
         document.getElementById('pendingCount').textContent = `${pending} 筆待審`;
       } catch (err) {
         console.error(err);
+      }
+    }
+
+    async function respondHandover(id, handover_status) {
+      try {
+        const res = await fetch(`${API_BASE}/leave/${id}/handover`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            employee_id: currentEmployeeId,
+            handover_status
+          })
+        });
+        const data = await res.json();
+        alert(data.message);
+        loadLeaveRequests();
+        loadNotifications();
+      } catch (err) {
+        alert('交接操作失敗');
       }
     }
 

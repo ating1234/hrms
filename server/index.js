@@ -408,13 +408,15 @@ app.get('/api/leave', async (req, res) => {
   try {
     let baseQuery = `
       SELECT l.*, e.name as employee_name, e.employee_no, d.name as department_name,
-             m.name as manager_reviewer_name, a.name as adm_reviewer_name, c.name as ceo_reviewer_name
+             m.name as manager_reviewer_name, a.name as adm_reviewer_name, c.name as ceo_reviewer_name,
+             h.name as handover_employee_name
       FROM leave_requests l
       JOIN employees e ON l.employee_id = e.id
       LEFT JOIN departments d ON e.department_id = d.id
       LEFT JOIN employees m ON l.manager_approved_by = m.id
       LEFT JOIN employees a ON l.adm_approved_by = a.id
       LEFT JOIN employees c ON l.ceo_approved_by = c.id
+      LEFT JOIN employees h ON l.handover_employee_id = h.id
     `;
 
     if (!requester_id) {
@@ -430,14 +432,14 @@ app.get('/api/leave', async (req, res) => {
 
     if (reqEmp.role === 'employee') {
       params.push(requester_id);
-      condition = ` WHERE l.employee_id = $1`;
+      condition = ` WHERE l.employee_id = $1 OR l.handover_employee_id = $1`;
     } else if (reqEmp.role === 'manager') {
       if (reqEmp.dept_code === 'ADM') {
         params.push(requester_id);
-        condition = ` WHERE l.employee_id = $1 OR l.current_stage = 'adm' OR l.status = 'pending_adm' OR e.department_id = '${reqEmp.department_id}'`;
+        condition = ` WHERE l.employee_id = $1 OR l.handover_employee_id = $1 OR l.current_stage = 'adm' OR l.status = 'pending_adm' OR e.department_id = '${reqEmp.department_id}'`;
       } else {
         params.push(requester_id, reqEmp.department_id);
-        condition = ` WHERE l.employee_id = $1 OR e.department_id = $2`;
+        condition = ` WHERE l.employee_id = $1 OR l.handover_employee_id = $1 OR e.department_id = $2`;
       }
     }
 
@@ -450,7 +452,7 @@ app.get('/api/leave', async (req, res) => {
 });
 
 app.post('/api/leave', async (req, res) => {
-  const { employee_id, leave_type, start_time, end_time, total_hours, reason } = req.body;
+  const { employee_id, leave_type, start_time, end_time, total_hours, reason, handover_employee_id, attachment_url } = req.body;
   try {
     const leaveDays = parseFloat((parseFloat(total_hours || 8) / 8).toFixed(1));
     
@@ -488,14 +490,29 @@ app.post('/api/leave', async (req, res) => {
       initialStatus = 'pending_adm';
     }
 
+    const handoverStatus = handover_employee_id ? 'pending' : 'accepted';
+
     const result = await pool.query(
       `INSERT INTO leave_requests 
-       (employee_id, leave_type, start_time, end_time, total_hours, reason, status, current_stage) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [employee_id, leave_type, start_time, end_time, total_hours || 8, reason, initialStatus, initialStage]
+       (employee_id, leave_type, start_time, end_time, total_hours, reason, status, current_stage, handover_employee_id, handover_status, attachment_url) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+      [employee_id, leave_type, start_time, end_time, total_hours || 8, reason, initialStatus, initialStage, handover_employee_id || null, handoverStatus, attachment_url || null]
     );
 
     const leaveRequest = result.rows[0];
+
+    // 若指定職務代理人，發送通知給職務代理人
+    if (handover_employee_id) {
+      await pool.query(
+        `INSERT INTO notifications (recipient_id, title, message, link) VALUES ($1, $2, $3, $4)`,
+        [
+          handover_employee_id,
+          `🤝 職務代理交接請求：${emp.name}`,
+          `同事 ${emp.name} 申請了 ${leaveDays} 天 ${leave_type}，指定您為職務代理人，請至請假簽核頁面按下「確認接手」。`,
+          '#leave'
+        ]
+      );
+    }
 
     let targetManagerName = '部門主管';
     if (targetManagerId) {
@@ -514,13 +531,29 @@ app.post('/api/leave', async (req, res) => {
     }
 
     res.json({
-      message: `請假申請已送出！一級簽核呈報至【${emp.dept_name || '同部門'} 主管：${targetManagerName}】。`,
+      message: `請假申請已送出！一級簽核呈報至【${emp.dept_name || '同部門'} 主管：${targetManagerName}】${handover_employee_id ? '（已通知職務代理人進行接手）' : ''}。`,
       data: leaveRequest,
       leaveDays
     });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error submitting leave request' });
+  }
+});
+
+// Phase 3 新增：職務代理人按下「接手/拒絕」交接請求 API
+app.put('/api/leave/:id/handover', async (req, res) => {
+  const { id } = req.params;
+  const { employee_id, handover_status } = req.body;
+  try {
+    const result = await pool.query(
+      `UPDATE leave_requests SET handover_status = $1 WHERE id = $2 AND handover_employee_id = $3 RETURNING *`,
+      [handover_status, id, employee_id]
+    );
+    if (result.rows.length === 0) return res.status(403).json({ error: '無權操作此假單交接' });
+    res.json({ message: handover_status === 'accepted' ? '🤝 已成功接手職務代理交接！' : '已拒絕交接', data: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error handling handover' });
   }
 });
 
